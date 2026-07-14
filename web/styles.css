@@ -232,6 +232,38 @@ body::before {
 .primary-btn { background: linear-gradient(135deg, var(--cyan), var(--violet)); color: var(--bg); border: none; box-shadow: var(--glow); }
 .ghost-btn { background: transparent; color: var(--text-dim); border: 1px solid var(--glass-brd); }
 
+/* ---- Access gate ---- */
+.gate {
+  position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(900px 600px at 50% 30%, rgba(123,92,255,.22), transparent 60%),
+    linear-gradient(180deg, var(--bg-2), var(--bg));
+}
+.gate[hidden] { display: none; }
+.gate-card {
+  width: min(380px, 92vw); text-align: center;
+  background: var(--glass); border: 1px solid var(--glass-brd); border-radius: 20px;
+  padding: 34px 26px; box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+}
+.gate-mark {
+  width: 64px; height: 64px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #eafcff, var(--cyan) 45%, var(--violet) 100%);
+  box-shadow: 0 0 30px rgba(51,230,255,.6), 0 0 60px rgba(123,92,255,.4);
+  animation: breathe 4s ease-in-out infinite; margin-bottom: 4px;
+}
+.gate-title { font-weight: 700; letter-spacing: 7px; font-size: 26px; }
+.gate-sub { color: var(--text-dim); font-size: 14px; }
+.gate-input {
+  width: 100%; text-align: center; background: rgba(5,6,10,.6); color: var(--text);
+  border: 1px solid var(--glass-brd); border-radius: 12px; padding: 13px 14px;
+  font: inherit; font-size: 16px; letter-spacing: 1px; outline: none; margin-top: 6px;
+}
+.gate-input:focus { border-color: var(--cyan); box-shadow: var(--glow); }
+.gate-enter { width: 100%; padding: 13px; font-size: 15px; }
+.gate-error { color: #ff6b8a; font-size: 13px; min-height: 1.1em; }
+
 @media (max-width: 480px) {
   .brand-sub { display: none; }
   #app { grid-template-rows: auto minmax(120px, 26vh) 1fr auto; }

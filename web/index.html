@@ -11,6 +11,19 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
+  <!-- Access gate — shown only when the server requires a key (AUTH_SECRET set) -->
+  <div id="gate" class="gate" hidden>
+    <div class="gate-card">
+      <div class="gate-mark" aria-hidden="true"></div>
+      <div class="gate-title">TRACY</div>
+      <div class="gate-sub">Enter your access key to continue.</div>
+      <input id="gate-key" class="gate-input" type="text" autocomplete="off" spellcheck="false"
+             placeholder="tracy-xxxx-xxxx-xxxx" />
+      <button id="gate-enter" class="primary-btn gate-enter">Enter</button>
+      <div id="gate-error" class="gate-error" aria-live="polite"></div>
+    </div>
+  </div>
+
   <div id="app">
     <!-- Top bar -->
     <header class="topbar">

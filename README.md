@@ -106,6 +106,24 @@ you're on BabyResell, the desktop, or a game.
 Same consent caveat as logging. Tracy is instructed to save only useful,
 non-sensitive facts (never passwords or payment details).
 
+## Access control (optional)
+
+By default the site is open. To require an **access key**, set `AUTH_SECRET` on
+the server — then `/chat` is locked and visitors must redeem a key for a session
+token (stored per-browser; a new browser must redeem again). The page and
+`/health` stay public so the key-entry screen can load.
+
+- **Keys** come from `ACCESS_KEYS` (comma-separated env) and/or a Postgres
+  `access_keys` table. Generate managed, revocable keys:
+  ```bash
+  node scripts/genkey.js "Alice"   # needs DATABASE_URL; prints the key once
+  ```
+- Keys are stored **hashed** (SHA-256), never in plaintext. Session tokens are
+  stateless HMACs signed with `AUTH_SECRET` (rotate it to invalidate all tokens;
+  deactivating a DB key invalidates its tokens within ~60s).
+- Enabling: on Render set `AUTH_SECRET` (e.g. `openssl rand -hex 32`) and either
+  `ACCESS_KEYS` or generate DB keys. Revoke a DB key by setting `active=false`.
+
 ## Personality & safety tests
 
 `personality-tests.md` documents 12 tricky scenarios (expired car seat, rude

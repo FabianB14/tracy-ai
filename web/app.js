@@ -34,6 +34,40 @@
   }
   if (Corrections) Corrections.init(settings.userId);
 
+  // ---- Auth (access-key gate) ----
+  const api = () => settings.backendUrl.replace(/\/$/, "");
+  const getToken = () => store.get("token", null);
+  const setToken = (t) => store.set("token", t);
+  const clearToken = () => { try { localStorage.removeItem("tracy.token"); } catch {} };
+
+  function showGate(msg) {
+    const g = $("gate"); if (!g) return;
+    $("gate-error").textContent = msg || "";
+    g.hidden = false;
+    setTimeout(() => { const k = $("gate-key"); if (k) k.focus(); }, 60);
+  }
+  function hideGate() { const g = $("gate"); if (g) g.hidden = true; }
+
+  async function submitKey() {
+    const key = ($("gate-key").value || "").trim();
+    if (!key) { $("gate-error").textContent = "Enter your access key."; return; }
+    const btn = $("gate-enter"); btn.disabled = true;
+    try {
+      const res = await fetch(api() + "/auth", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.token) {
+        setToken(data.token); $("gate-key").value = ""; $("gate-error").textContent = "";
+        hideGate(); pingHealth();
+      } else {
+        $("gate-error").textContent = data.error || "That access key isn't valid.";
+      }
+    } catch { $("gate-error").textContent = `Couldn't reach the server at ${api()}.`; }
+    finally { btn.disabled = false; }
+  }
+
   // ---- State ----
   let messages = [];
   let busy = false;
@@ -145,13 +179,17 @@
     thinking.classList.add("dots");
 
     try {
-      const res = await fetch(settings.backendUrl.replace(/\/$/, "") + "/chat", {
+      const headers = { "Content-Type": "application/json" };
+      const tok = getToken();
+      if (tok) headers.Authorization = "Bearer " + tok;
+      const res = await fetch(api() + "/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ surface: settings.surface, userId: settings.userId, messages }),
       });
       thinking.remove();
 
+      if (res.status === 401) { clearToken(); showGate("Please enter your access key to continue."); return; }
       if (!res.ok) {
         let msg = `Tracy couldn't answer (HTTP ${res.status}).`;
         try { const j = await res.json(); if (j.error) msg = j.error; } catch {}
@@ -182,8 +220,11 @@
     elStatus.classList.toggle("offline", online === false);
   }
   async function pingHealth() {
-    try { setStatus((await fetch(settings.backendUrl.replace(/\/$/, "") + "/health")).ok); }
-    catch { setStatus(false); }
+    try {
+      const h = await fetch(api() + "/health").then((r) => r.json());
+      setStatus(!!h.ok);
+      if (h.authRequired && !getToken()) showGate();
+    } catch { setStatus(false); }
   }
 
   // ---- Text-to-speech (Tracy's voice) ----
@@ -435,6 +476,9 @@
     if (!settings.autoSpeak) stopSpeaking();
   });
   $("mute-btn").textContent = settings.autoSpeak ? "🔊" : "🔇";
+
+  $("gate-enter").addEventListener("click", submitKey);
+  $("gate-key").addEventListener("keydown", (e) => { if (e.key === "Enter") submitKey(); });
 
   if (synth) { loadVoices(); synth.onvoiceschanged = loadVoices; }
   if (handsFree) elHF.classList.add("active"); // restored on next user gesture (mic needs a gesture to start)

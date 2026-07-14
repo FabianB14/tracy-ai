@@ -17,6 +17,7 @@ import { buildToolkit } from "./tools.js";
 import { resolveSurface } from "./surfaces.js";
 import { logConversation } from "./logging.js";
 import { getMemories, formatMemoryBlock } from "./memory.js";
+import { authEnabled, requireAuth, handleAuth } from "./auth.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -50,8 +51,12 @@ app.use(express.static(path.join(__dirname, "..", "web")));
 //   surface?: string,   // "babyresell" | "carparts" | "desktop" | "mobile" | "game:NAME"
 //   userId?:  string,   // caller's user id, for logging/personalization
 // }
+// Redeem an access key for a session token (see src/auth.js).
+app.post("/auth", handleAuth);
+
 // The client keeps conversation history and sends the whole thing each turn.
-app.post("/chat", async (req, res) => {
+// requireAuth is a no-op unless AUTH_SECRET is configured.
+app.post("/chat", requireAuth, async (req, res) => {
   try {
     const { messages, surface, userId } = req.body;
     if (!Array.isArray(messages) || messages.length === 0) {
@@ -137,7 +142,7 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-app.get("/health", (_req, res) => res.json({ ok: true, assistant: "Tracy" }));
+app.get("/health", (_req, res) => res.json({ ok: true, assistant: "Tracy", authRequired: authEnabled() }));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Tracy is listening on :${PORT}`));
