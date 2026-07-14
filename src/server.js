@@ -9,6 +9,7 @@
 
 import "dotenv/config";
 import express from "express";
+import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
 import { buildToolkit } from "./tools.js";
 import { resolveSurface } from "./surfaces.js";
@@ -19,6 +20,17 @@ const MODEL = process.env.TRACY_MODEL || "claude-sonnet-4-6";
 const MAX_TOOL_ROUNDS = 5;
 
 const app = express();
+
+// CORS: Tracy's frontends (GitHub Pages / Vercel / a wrapped desktop or mobile
+// app) live on different origins than this API, so browsers need CORS to call
+// /chat. Set CORS_ORIGINS to a comma-separated allowlist in production
+// (e.g. "https://you.github.io,https://tracy.vercel.app"); unset = allow all,
+// which is fine until auth is added.
+const CORS_ORIGINS = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(",").map((o) => o.trim())
+  : undefined;
+app.use(cors(CORS_ORIGINS ? { origin: CORS_ORIGINS } : undefined));
+
 app.use(express.json({ limit: "2mb" }));
 
 // POST /chat

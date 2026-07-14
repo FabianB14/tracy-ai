@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="38%" r="75%">
+      <stop offset="0%" stop-color="#0a1226"/>
+      <stop offset="100%" stop-color="#05060a"/>
+    </radialGradient>
+    <radialGradient id="core" cx="38%" cy="32%" r="70%">
+      <stop offset="0%" stop-color="#eafcff"/>
+      <stop offset="45%" stop-color="#33e6ff"/>
+      <stop offset="100%" stop-color="#7b5cff"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <circle cx="256" cy="212" r="92" fill="url(#core)"/>
+  <circle cx="256" cy="212" r="130" fill="none" stroke="#33e6ff" stroke-opacity="0.5" stroke-width="3"/>
+  <circle cx="256" cy="212" r="160" fill="none" stroke="#ff4ecd" stroke-opacity="0.35" stroke-width="2"/>
+  <text x="256" y="430" font-family="Segoe UI, Arial, sans-serif" font-size="86" font-weight="700"
+        letter-spacing="10" text-anchor="middle" fill="#e7f6ff">TRACY</text>
+</svg>
