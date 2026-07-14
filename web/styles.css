@@ -162,9 +162,23 @@ body::before {
 }
 .mic-btn:active, .send-btn:active { transform: scale(.94); }
 .mic-btn.listening { background: linear-gradient(135deg, var(--magenta), var(--violet)); animation: micpulse 1s ease-in-out infinite; }
-.mic-btn:disabled { opacity: .4; cursor: not-allowed; filter: grayscale(.6); }
+.mic-btn:disabled, .hf-btn:disabled { opacity: .4; cursor: not-allowed; filter: grayscale(.6); }
 @keyframes micpulse { 0%,100% { box-shadow: 0 0 20px rgba(255,78,205,.5);} 50% { box-shadow: 0 0 40px rgba(255,78,205,.95);} }
 .mute-btn { font-size: 16px; }
+
+/* Hands-free (open mic) toggle — sits next to the mic. Off = outlined, On = lit. */
+.hf-btn {
+  flex: none; width: 44px; height: 48px; border-radius: 14px; cursor: pointer;
+  display: grid; place-items: center; color: var(--text-dim);
+  background: var(--glass); border: 1px solid var(--glass-brd);
+  transition: color .2s, border-color .2s, box-shadow .2s, background .2s;
+}
+.hf-btn:hover { border-color: var(--cyan); color: var(--text); }
+.hf-btn.active {
+  color: #fff; border-color: var(--magenta);
+  background: linear-gradient(135deg, rgba(255,78,205,.35), rgba(123,92,255,.3));
+  box-shadow: 0 0 18px rgba(255,78,205,.7); animation: micpulse 1.4s ease-in-out infinite;
+}
 
 /* ---- Modal ---- */
 .modal { position: fixed; inset: 0; background: rgba(3,5,10,.7); backdrop-filter: blur(6px); display: grid; place-items: center; z-index: 20; }
