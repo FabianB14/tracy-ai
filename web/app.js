@@ -253,6 +253,16 @@
     return [...voices].sort((a, b) => voiceScore(b) - voiceScore(a))[0];
   }
 
+  // iOS Safari blocks speechSynthesis unless it's first triggered inside a user
+  // gesture. Tracy speaks AFTER a network reply (not a gesture), so we "unlock"
+  // TTS by speaking a silent utterance on the first tap/keypress.
+  let ttsPrimed = false;
+  function primeTTS() {
+    if (ttsPrimed || !synth) return;
+    ttsPrimed = true;
+    try { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; synth.speak(u); } catch {}
+  }
+
   // Split text into short caption "cues" (like CC lines): break on clause/sentence
   // punctuation and cap length, so only a few words show at a time.
   function buildCues(text) {
@@ -273,6 +283,7 @@
   function speak(text, bubbleEl) {
     if (!settings.autoSpeak || !synth) return;
     synth.cancel();
+    try { synth.resume(); } catch {} // iOS can leave the queue paused after cancel
 
     text = stripMarkdown(text); // don't read "**", "`", "#", etc. aloud
     const cues = buildCues(text);
@@ -333,41 +344,55 @@
   function stopSpeaking() { if (synth) synth.cancel(); speaking = false; setOrbState(null); }
 
   // ---- Speech-to-text (mic) with hands-free + correction ----
-  // Continuous listening: WE decide when you're done, after `silenceMs` of no
-  // speech — so pausing mid-thought doesn't cut you off.
+  // We decide when you're done: the utterance is sent after `silenceMs` of no
+  // speech. Mobile browsers end the recognition session between phrases (they
+  // don't hold `continuous` like desktop), so we accumulate text ACROSS sessions
+  // and keep the send timer running through `onend` — the pause, not the engine
+  // ending, decides when to send.
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let recognition = null, listening = false, restartTimer = null, silenceTimer = null;
+  let recognition = null, listening = false, restartTimer = null, sendTimer = null;
+  let committed = "";   // finalized text from prior (ended) sessions this utterance
+  let sessionText = ""; // current session's text (final + interim)
 
-  function clearSilence() { clearTimeout(silenceTimer); }
-  function resetSilenceTimer() { clearSilence(); silenceTimer = setTimeout(endpoint, Math.round(settings.silenceMs)); }
+  function pendingText() { return (committed + " " + sessionText).replace(/\s+/g, " ").trim(); }
+  function clearSend() { clearTimeout(sendTimer); sendTimer = null; }
+  function armSend() { clearTimeout(sendTimer); sendTimer = setTimeout(endpoint, Math.round(settings.silenceMs)); }
+  function resetBuffers() { committed = ""; sessionText = ""; }
 
-  // Fires after a real pause: finalize the utterance.
+  // Fires after a real pause: finalize + send (or leave for manual send).
   function endpoint() {
-    const text = elInput.value.trim();
+    clearSend();
+    const raw = pendingText();
+    const corrected = Corrections ? Corrections.apply(raw) : raw;
     const wasHandsFree = handsFree;
-    stopRecognition(); // flush; onend may reopen the mic (hands-free)
-    if (!text) return;
-    if (wasHandsFree || settings.autoSend) send(text);
-    // else: leave the text in the box to review and send manually
+    resetBuffers();
+    stopRecognition();
+    if (!raw) return;
+    lastSttRaw = raw; lastSttCorrected = corrected;
+    if (wasHandsFree || settings.autoSend) send(corrected);
+    else elInput.value = corrected; // leave in the box to review and send manually
   }
 
   if (SR) {
     recognition = new SR();
     recognition.lang = "en-US";
     recognition.interimResults = true;
-    recognition.continuous = true; // keep the stream open through pauses
+    recognition.continuous = true; // desktop holds the stream; mobile ends per phrase
 
     recognition.onstart = () => { listening = true; elMic.classList.add("listening"); if (!speaking) setOrbState("listening"); };
     recognition.onend = () => {
-      listening = false; elMic.classList.remove("listening"); clearSilence();
+      listening = false; elMic.classList.remove("listening");
+      if (sessionText) { committed = pendingText(); sessionText = ""; } // commit this phrase
       if (!speaking) setOrbState(null);
-      maybeListen(); // hands-free: reopen when it's Tracy's turn to listen again
+      // Do NOT clear sendTimer — the pause window decides. Keep listening in
+      // hands-free, or (one-shot) while an utterance is still awaiting its pause.
+      restartSoon();
     };
     recognition.onerror = (e) => {
-      listening = false; elMic.classList.remove("listening"); clearSilence();
+      listening = false; elMic.classList.remove("listening");
       if (!speaking) setOrbState(null);
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") setHandsFree(false);
-      // "no-speech" / "aborted" are normal in continuous mode; onend handles it.
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") { clearSend(); resetBuffers(); setHandsFree(false); }
+      // "no-speech" / "aborted" are normal; onend handles the restart.
     };
     recognition.onresult = (e) => {
       let finalTxt = "", interim = "";
@@ -375,11 +400,12 @@
         const r = e.results[i];
         if (r.isFinal) finalTxt += r[0].transcript; else interim += r[0].transcript;
       }
-      const raw = (finalTxt + " " + interim).trim();
+      sessionText = (finalTxt + " " + interim).trim();
+      const raw = pendingText();
       const corrected = Corrections ? Corrections.apply(raw) : raw;
       elInput.value = corrected;
       lastSttRaw = raw; lastSttCorrected = corrected;
-      if (raw) resetSilenceTimer(); // any speech (even interim) postpones the send
+      if (raw) armSend(); // any speech (even interim) restarts the pause countdown
     };
   } else {
     elMic.disabled = true; elHF.disabled = true;
@@ -387,21 +413,25 @@
   }
 
   function startRecognition() { if (!recognition || listening || speaking || busy) return; try { recognition.start(); } catch {} }
-  function stopRecognition() { clearSilence(); if (recognition && listening) { try { recognition.stop(); } catch {} } }
-  function restartSoon() { clearTimeout(restartTimer); restartTimer = setTimeout(maybeListen, 350); }
-  function maybeListen() { if (handsFree && !speaking && !busy && !listening) startRecognition(); }
+  function stopRecognition() { if (recognition && listening) { try { recognition.stop(); } catch {} } }
+  function restartSoon() { clearTimeout(restartTimer); restartTimer = setTimeout(maybeListen, 300); }
+  // Reopen the mic when appropriate: hands-free, or a one-shot utterance still
+  // mid-pause (sendTimer pending). Never while speaking/busy/already listening.
+  function maybeListen() { if (speaking || busy || listening) return; if (handsFree || sendTimer) startRecognition(); }
 
   function toggleMic() {
     if (!recognition) return;
-    stopSpeaking();
-    if (listening) stopRecognition(); else startRecognition();
+    primeTTS(); stopSpeaking();
+    if (listening) { clearSend(); resetBuffers(); stopRecognition(); }
+    else { resetBuffers(); startRecognition(); }
   }
   function setHandsFree(on) {
     handsFree = on; settings.handsFree = on; store.set("handsFree", on);
     elHF.classList.toggle("active", on);
     const cb = $("cfg-handsfree"); if (cb) cb.checked = on;
-    if (on) { stopSpeaking(); startRecognition(); }
-    else { clearTimeout(restartTimer); clearSilence(); stopRecognition(); }
+    primeTTS();
+    if (on) { stopSpeaking(); resetBuffers(); startRecognition(); }
+    else { clearTimeout(restartTimer); clearSend(); resetBuffers(); stopRecognition(); }
   }
 
   // ---- Settings modal ----
@@ -483,6 +513,10 @@
 
   $("gate-enter").addEventListener("click", submitKey);
   $("gate-key").addEventListener("keydown", (e) => { if (e.key === "Enter") submitKey(); });
+
+  // Prime iOS text-to-speech on the first interaction anywhere on the page.
+  ["pointerdown", "keydown", "touchend"].forEach((ev) =>
+    document.addEventListener(ev, primeTTS, { capture: true, once: true }));
 
   if (synth) { loadVoices(); synth.onvoiceschanged = loadVoices; }
   if (handsFree) elHF.classList.add("active"); // restored on next user gesture (mic needs a gesture to start)
