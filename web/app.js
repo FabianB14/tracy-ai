@@ -26,6 +26,7 @@
     voiceURI: store.get("voiceURI", null),
     rate: store.get("rate", 1.0),
     pitch: store.get("pitch", 1.0),
+    silenceMs: store.get("silenceMs", 2500), // pause after you stop before sending
   };
   if (!settings.userId) {
     settings.userId = "web-" + Math.random().toString(36).slice(2, 10);
@@ -83,6 +84,7 @@
     lastSttRaw = null; lastSttCorrected = null;
 
     busy = true;
+    let willSpeak = false;
     elInput.value = "";
     addMessage("user", text);
     messages.push({ role: "user", content: text });
@@ -108,13 +110,17 @@
       const reply = data.reply || "(no reply)";
       messages.push({ role: "assistant", content: reply });
       const bubble = addMessage("tracy", reply, { tools: data.toolsUsed });
-      speak(reply, bubble);
+      willSpeak = settings.autoSpeak && !!synth && !!reply;
+      speak(reply, bubble); // no-op if autoSpeak is off
     } catch (err) {
       thinking.remove();
       addMessage("system", `Couldn't reach Tracy at ${settings.backendUrl}. Is the backend up? (${err.message})`);
       setStatus(false);
     } finally {
       busy = false;
+      // Reopen the mic (hands-free) once it's the user's turn again. If Tracy is
+      // speaking, her TTS onend handles the reopen instead (avoids echo).
+      if (!willSpeak) maybeListen();
     }
   }
 
@@ -152,90 +158,154 @@
     return [...voices].sort((a, b) => voiceScore(b) - voiceScore(a))[0];
   }
 
+  // Split text into short caption "cues" (like CC lines): break on clause/sentence
+  // punctuation and cap length, so only a few words show at a time.
+  function buildCues(text) {
+    const words = [];
+    const re = /\S+\s*/g; let m;
+    while ((m = re.exec(text)) !== null) words.push({ text: m[0], start: m.index, end: m.index + m[0].length });
+    const cues = []; let cur = [];
+    const flush = () => { if (cur.length) { cues.push({ start: cur[0].start, end: cur[cur.length - 1].end, words: cur }); cur = []; } };
+    for (const w of words) {
+      cur.push(w);
+      const endsClause = /[.,;:!?]["')\]]?\s*$/.test(w.text);
+      if (cur.length >= 7 || (endsClause && cur.length >= 3)) flush();
+    }
+    flush();
+    return cues;
+  }
+
   function speak(text, bubbleEl) {
     if (!settings.autoSpeak || !synth) return;
     synth.cancel();
 
-    // Word-highlightable caption.
-    elCaption.innerHTML = "";
-    const spans = [];
-    const re = /\S+\s*/g; let m;
-    while ((m = re.exec(text)) !== null) {
-      const span = document.createElement("span");
-      span.className = "w"; span.textContent = m[0];
-      span.dataset.start = m.index; span.dataset.end = m.index + m[0].length;
-      elCaption.appendChild(span); spans.push(span);
-    }
+    const cues = buildCues(text);
+    let curCue = -1, gotBoundary = false, timers = [];
+    const clearTimers = () => { timers.forEach(clearTimeout); timers = []; };
+    const hideCaption = () => { elCaption.classList.remove("show"); };
+
+    // Render one cue; optionally highlight the word at charIdx (boundary mode).
+    const showCue = (ci, charIdx) => {
+      const cue = cues[ci]; if (!cue) return;
+      elCaption.innerHTML = "";
+      for (const w of cue.words) {
+        const s = document.createElement("span");
+        s.className = "w"; s.textContent = w.text;
+        if (charIdx == null || (charIdx >= w.start && charIdx < w.end)) s.classList.add("on");
+        elCaption.appendChild(s);
+      }
+      elCaption.classList.add("show");
+    };
+
+    // Fallback for voices that don't emit boundary events: advance cues on a timer.
+    const timerWalk = () => {
+      clearTimers();
+      const msPerWord = 340 / (settings.rate || 1);
+      let acc = 0;
+      cues.forEach((cue, ci) => { timers.push(setTimeout(() => { curCue = ci; showCue(ci, null); }, acc)); acc += cue.words.length * msPerWord; });
+      timers.push(setTimeout(hideCaption, acc + 250));
+    };
 
     const u = new SpeechSynthesisUtterance(text);
     const v = pickVoice(); if (v) u.voice = v;
     u.rate = settings.rate; u.pitch = settings.pitch;
 
-    u.onstart = () => { speaking = true; setOrbState("speaking"); if (handsFree) stopRecognition(); };
-    u.onend = () => { speaking = false; setOrbState(null); spans.forEach((s) => s.classList.remove("on")); if (handsFree) restartSoon(); };
-    u.onerror = () => { speaking = false; setOrbState(null); if (handsFree) restartSoon(); };
+    u.onstart = () => {
+      speaking = true; setOrbState("speaking"); if (handsFree) stopRecognition();
+      if (cues.length) showCue(0, cues[0].start); curCue = 0;
+      timers.push(setTimeout(() => { if (!gotBoundary) timerWalk(); }, 500)); // boundary fallback
+    };
+    u.onend = () => { speaking = false; setOrbState(null); clearTimers(); hideCaption(); if (handsFree) restartSoon(); };
+    u.onerror = () => { speaking = false; setOrbState(null); clearTimers(); hideCaption(); if (handsFree) restartSoon(); };
     u.onboundary = (e) => {
+      if (!gotBoundary) { gotBoundary = true; clearTimers(); }
       const i = e.charIndex;
-      spans.forEach((s) => s.classList.toggle("on", i >= +s.dataset.start && i < +s.dataset.end));
+      let ci = cues.findIndex((c) => i >= c.start && i < c.end);
+      if (ci === -1) ci = curCue;
+      if (ci === -1) return;
+      if (ci !== curCue) { curCue = ci; showCue(ci, i); }
+      else {
+        const spans = elCaption.children, cue = cues[ci];
+        for (let k = 0; k < spans.length && k < cue.words.length; k++) {
+          const w = cue.words[k];
+          spans[k].classList.toggle("on", i >= w.start && i < w.end);
+        }
+      }
     };
     synth.speak(u);
   }
   function stopSpeaking() { if (synth) synth.cancel(); speaking = false; setOrbState(null); }
 
   // ---- Speech-to-text (mic) with hands-free + correction ----
+  // Continuous listening: WE decide when you're done, after `silenceMs` of no
+  // speech — so pausing mid-thought doesn't cut you off.
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let recognition = null, listening = false, restartTimer = null;
+  let recognition = null, listening = false, restartTimer = null, silenceTimer = null;
+
+  function clearSilence() { clearTimeout(silenceTimer); }
+  function resetSilenceTimer() { clearSilence(); silenceTimer = setTimeout(endpoint, Math.round(settings.silenceMs)); }
+
+  // Fires after a real pause: finalize the utterance.
+  function endpoint() {
+    const text = elInput.value.trim();
+    const wasHandsFree = handsFree;
+    stopRecognition(); // flush; onend may reopen the mic (hands-free)
+    if (!text) return;
+    if (wasHandsFree || settings.autoSend) send(text);
+    // else: leave the text in the box to review and send manually
+  }
 
   if (SR) {
     recognition = new SR();
     recognition.lang = "en-US";
     recognition.interimResults = true;
-    recognition.continuous = false;
+    recognition.continuous = true; // keep the stream open through pauses
 
     recognition.onstart = () => { listening = true; elMic.classList.add("listening"); if (!speaking) setOrbState("listening"); };
     recognition.onend = () => {
-      listening = false; elMic.classList.remove("listening");
+      listening = false; elMic.classList.remove("listening"); clearSilence();
       if (!speaking) setOrbState(null);
-      if (handsFree && !speaking) restartSoon(); // open-mic: keep listening
+      maybeListen(); // hands-free: reopen when it's Tracy's turn to listen again
     };
     recognition.onerror = (e) => {
-      listening = false; elMic.classList.remove("listening");
+      listening = false; elMic.classList.remove("listening"); clearSilence();
       if (!speaking) setOrbState(null);
-      // "not-allowed" = mic permission denied → stop trying.
       if (e.error === "not-allowed" || e.error === "service-not-allowed") setHandsFree(false);
+      // "no-speech" / "aborted" are normal in continuous mode; onend handles it.
     };
     recognition.onresult = (e) => {
-      let raw = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) raw += e.results[i][0].transcript;
-      raw = raw.trim();
+      let finalTxt = "", interim = "";
+      for (let i = 0; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) finalTxt += r[0].transcript; else interim += r[0].transcript;
+      }
+      const raw = (finalTxt + " " + interim).trim();
       const corrected = Corrections ? Corrections.apply(raw) : raw;
       elInput.value = corrected;
-      const isFinal = e.results[e.results.length - 1].isFinal;
-      if (isFinal) {
-        lastSttRaw = raw; lastSttCorrected = corrected;
-        if ((handsFree || settings.autoSend) && corrected) send(corrected);
-      }
+      lastSttRaw = raw; lastSttCorrected = corrected;
+      if (raw) resetSilenceTimer(); // any speech (even interim) postpones the send
     };
   } else {
     elMic.disabled = true; elHF.disabled = true;
     elMic.title = elHF.title = "Voice input isn't supported in this browser (try Chrome/Edge, or Chrome on Android).";
   }
 
-  function startRecognition() { if (!recognition || listening || speaking) return; try { recognition.start(); } catch {} }
-  function stopRecognition() { if (recognition && listening) { try { recognition.stop(); } catch {} } }
-  function restartSoon() { clearTimeout(restartTimer); restartTimer = setTimeout(() => { if (handsFree && !speaking && !listening) startRecognition(); }, 350); }
+  function startRecognition() { if (!recognition || listening || speaking || busy) return; try { recognition.start(); } catch {} }
+  function stopRecognition() { clearSilence(); if (recognition && listening) { try { recognition.stop(); } catch {} } }
+  function restartSoon() { clearTimeout(restartTimer); restartTimer = setTimeout(maybeListen, 350); }
+  function maybeListen() { if (handsFree && !speaking && !busy && !listening) startRecognition(); }
 
   function toggleMic() {
     if (!recognition) return;
     stopSpeaking();
-    if (listening) recognition.stop(); else startRecognition();
+    if (listening) stopRecognition(); else startRecognition();
   }
   function setHandsFree(on) {
     handsFree = on; settings.handsFree = on; store.set("handsFree", on);
     elHF.classList.toggle("active", on);
     const cb = $("cfg-handsfree"); if (cb) cb.checked = on;
     if (on) { stopSpeaking(); startRecognition(); }
-    else { clearTimeout(restartTimer); stopRecognition(); }
+    else { clearTimeout(restartTimer); clearSilence(); stopRecognition(); }
   }
 
   // ---- Settings modal ----
@@ -248,6 +318,7 @@
     $("cfg-handsfree").checked = handsFree;
     $("cfg-rate").value = settings.rate; $("cfg-rate-val").textContent = (+settings.rate).toFixed(2);
     $("cfg-pitch").value = settings.pitch; $("cfg-pitch-val").textContent = (+settings.pitch).toFixed(2);
+    $("cfg-silence").value = settings.silenceMs / 1000; $("cfg-silence-val").textContent = (settings.silenceMs / 1000).toFixed(1) + "s";
     if (Corrections) $("cfg-corrections").value = formatCorrections(Corrections.list());
     populateVoicePicker();
     modal.hidden = false;
@@ -282,8 +353,9 @@
     settings.autoSpeak = $("cfg-autospeak").checked;
     settings.autoSend = $("cfg-autosend").checked;
     settings.rate = +$("cfg-rate").value; settings.pitch = +$("cfg-pitch").value;
+    settings.silenceMs = Math.round((+$("cfg-silence").value) * 1000);
     const vsel = $("cfg-voice"); settings.voiceURI = vsel && vsel.value ? vsel.value : settings.voiceURI;
-    for (const k of ["backendUrl", "userId", "autoSpeak", "autoSend", "voiceURI", "rate", "pitch"]) store.set(k, settings[k]);
+    for (const k of ["backendUrl", "userId", "autoSpeak", "autoSend", "voiceURI", "rate", "pitch", "silenceMs"]) store.set(k, settings[k]);
     if (Corrections) { Corrections.init(settings.userId); Corrections.replaceAll(parseCorrections($("cfg-corrections").value)); }
     setHandsFree($("cfg-handsfree").checked);
     modal.hidden = true;
@@ -302,6 +374,7 @@
   $("cfg-save").addEventListener("click", saveSettings);
   $("cfg-rate").addEventListener("input", (e) => { $("cfg-rate-val").textContent = (+e.target.value).toFixed(2); });
   $("cfg-pitch").addEventListener("input", (e) => { $("cfg-pitch-val").textContent = (+e.target.value).toFixed(2); });
+  $("cfg-silence").addEventListener("input", (e) => { $("cfg-silence-val").textContent = (+e.target.value).toFixed(1) + "s"; });
   $("cfg-clear").addEventListener("click", () => { messages = []; elTranscript.innerHTML = ""; elCaption.textContent = ""; modal.hidden = true; });
   $("mute-btn").addEventListener("click", (e) => {
     settings.autoSpeak = !settings.autoSpeak; store.set("autoSpeak", settings.autoSpeak);

@@ -112,13 +112,17 @@ body::before {
 .orb.listening .orb-core { background: radial-gradient(circle at 35% 30%, #fff, var(--magenta) 50%, var(--violet) 100%); }
 @keyframes pulse { 0%,100% { transform: scale(1); box-shadow: 0 0 30px rgba(51,230,255,.6); } 50% { transform: scale(1.18); box-shadow: 0 0 55px rgba(51,230,255,.95); } }
 
+/* Captions: CC-style, right side. A few words at a time, fading in/out. */
 .caption {
-  min-height: 1.4em; max-width: 640px; text-align: center;
-  font-size: clamp(15px, 2.4vw, 20px); line-height: 1.5; padding: 0 8px;
-  color: var(--text-dim); letter-spacing: .3px;
+  position: absolute; right: 12px; bottom: 0;
+  max-width: 48%; text-align: right;
+  font-size: clamp(15px, 2.6vw, 22px); line-height: 1.45; letter-spacing: .3px;
+  color: var(--text-dim);
+  opacity: 0; transition: opacity .28s ease; pointer-events: none;
 }
+.caption.show { opacity: 1; }
 .caption .w { transition: color .12s, text-shadow .12s; }
-.caption .w.on { color: #fff; text-shadow: 0 0 14px rgba(51, 230, 255, .9); }
+.caption .w.on { color: #fff; text-shadow: 0 0 16px rgba(51, 230, 255, .95); }
 
 /* ---- Transcript ---- */
 .transcript {
