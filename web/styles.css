@@ -143,6 +143,17 @@ body::before {
   box-shadow: inset 0 0 20px rgba(51,230,255,.06);
 }
 .msg.tracy .tools { display: block; margin-top: 6px; font-size: 11px; color: var(--cyan-dim); letter-spacing: .5px; }
+/* Rendered markdown inside Tracy's bubbles */
+.msg.tracy strong { color: #fff; font-weight: 700; }
+.msg.tracy em { font-style: italic; }
+.msg.tracy code { background: rgba(51,230,255,.12); border: 1px solid var(--glass-brd); border-radius: 5px; padding: 1px 5px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .9em; }
+.msg.tracy pre { background: rgba(0,0,0,.35); border: 1px solid var(--glass-brd); border-radius: 10px; padding: 10px 12px; overflow-x: auto; margin: 6px 0; }
+.msg.tracy pre code { background: none; border: none; padding: 0; }
+.msg.tracy a { color: var(--cyan); text-decoration: underline; }
+.msg.tracy ul, .msg.tracy ol { margin: 4px 0; padding-left: 20px; }
+.msg.tracy li { margin: 2px 0; }
+.msg.tracy .md-h { font-weight: 700; color: #fff; margin: 4px 0 2px; }
+.msg.tracy > div + div { margin-top: 4px; }
 .msg.system { align-self: center; font-size: 12.5px; color: var(--text-dim); background: transparent; border: 1px dashed var(--glass-brd); }
 .msg.thinking { align-self: flex-start; color: var(--text-dim); }
 .dots::after { content: "…"; animation: dots 1.2s steps(4) infinite; }

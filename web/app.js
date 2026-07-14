@@ -52,11 +52,63 @@
   const elMic = $("mic-btn");
   const elHF = $("handsfree-btn");
 
+  // ---- Markdown (render for the eyes, strip for the voice) ----
+  function escapeHtml(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function inlineMd(s) {
+    // s is already HTML-escaped
+    s = s.replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`);
+    s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+    s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      (_, t, u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${t}</a>`);
+    return s;
+  }
+  function renderMarkdown(text) {
+    const lines = String(text).replace(/\r\n/g, "\n").split("\n");
+    let html = "", listType = null, inCode = false, codeBuf = "";
+    const closeList = () => { if (listType) { html += listType === "ul" ? "</ul>" : "</ol>"; listType = null; } };
+    for (const line of lines) {
+      if (/^\s*```/.test(line)) {
+        if (inCode) { html += `<pre><code>${escapeHtml(codeBuf)}</code></pre>`; codeBuf = ""; inCode = false; }
+        else { closeList(); inCode = true; }
+        continue;
+      }
+      if (inCode) { codeBuf += (codeBuf ? "\n" : "") + line; continue; }
+      const esc = escapeHtml(line);
+      let m;
+      if ((m = esc.match(/^\s{0,3}#{1,6}\s+(.*)$/))) { closeList(); html += `<div class="md-h">${inlineMd(m[1])}</div>`; continue; }
+      if ((m = esc.match(/^\s*[-*+]\s+(.*)$/))) { if (listType !== "ul") { closeList(); html += "<ul>"; listType = "ul"; } html += `<li>${inlineMd(m[1])}</li>`; continue; }
+      if ((m = esc.match(/^\s*\d+\.\s+(.*)$/))) { if (listType !== "ol") { closeList(); html += "<ol>"; listType = "ol"; } html += `<li>${inlineMd(m[1])}</li>`; continue; }
+      if (esc.trim() === "") { closeList(); html += "<br>"; continue; }
+      closeList(); html += `<div>${inlineMd(esc)}</div>`;
+    }
+    if (inCode) html += `<pre><code>${escapeHtml(codeBuf)}</code></pre>`;
+    closeList();
+    return html;
+  }
+  // Plain prose for speech + captions — no symbols to read aloud.
+  function stripMarkdown(text) {
+    let s = String(text).replace(/\r\n/g, "\n");
+    s = s.replace(/```([\s\S]*?)```/g, "$1");
+    s = s.replace(/`([^`]+)`/g, "$1");
+    s = s.replace(/\*\*([^*]+)\*\*/g, "$1");
+    s = s.replace(/__([^_]+)__/g, "$1");
+    s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1$2");
+    s = s.replace(/(^|[^_])_([^_\n]+)_/g, "$1$2");
+    s = s.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
+    s = s.replace(/^\s{0,3}#{1,6}\s+/gm, "");
+    s = s.replace(/^\s*[-*+]\s+/gm, "");
+    s = s.replace(/[ \t]{2,}/g, " ");
+    return s.trim();
+  }
+
   // ---- Rendering ----
   function addMessage(role, text, opts = {}) {
     const div = document.createElement("div");
     div.className = "msg " + role;
-    div.textContent = text;
+    if (opts.markdown) div.innerHTML = renderMarkdown(text);
+    else div.textContent = text;
     if (opts.tools && opts.tools.length) {
       const t = document.createElement("span");
       t.className = "tools";
@@ -109,7 +161,7 @@
       const data = await res.json();
       const reply = data.reply || "(no reply)";
       messages.push({ role: "assistant", content: reply });
-      const bubble = addMessage("tracy", reply, { tools: data.toolsUsed });
+      const bubble = addMessage("tracy", reply, { tools: data.toolsUsed, markdown: true });
       willSpeak = settings.autoSpeak && !!synth && !!reply;
       speak(reply, bubble); // no-op if autoSpeak is off
     } catch (err) {
@@ -179,6 +231,7 @@
     if (!settings.autoSpeak || !synth) return;
     synth.cancel();
 
+    text = stripMarkdown(text); // don't read "**", "`", "#", etc. aloud
     const cues = buildCues(text);
     let curCue = -1, gotBoundary = false, timers = [];
     const clearTimers = () => { timers.forEach(clearTimeout); timers = []; };
