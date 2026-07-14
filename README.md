@@ -92,6 +92,20 @@ chosen automatically:
 note at the top of `src/logging.js`. On Render, set `DATABASE_URL` to your
 Postgres **Internal Database URL**.
 
+## Per-user memory
+
+Tracy remembers people across sessions. On each `/chat`, memory for that `userId`
+is loaded and injected into her prompt ("What you remember about this user"), and
+she saves durable facts herself via a core `remember` tool (available on every
+surface). Memory is **global per user** — the same Tracy remembers you whether
+you're on BabyResell, the desktop, or a game.
+
+- **`DATABASE_URL` set** → `user_memory` table in Postgres (`src/memory.js`).
+- **unset** → `logs/memory.json` (zero-config local dev).
+
+Same consent caveat as logging. Tracy is instructed to save only useful,
+non-sensitive facts (never passwords or payment details).
+
 ## Personality & safety tests
 
 `personality-tests.md` documents 12 tricky scenarios (expired car seat, rude

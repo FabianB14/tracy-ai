@@ -14,6 +14,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { buildToolkit } from "./tools.js";
 import { resolveSurface } from "./surfaces.js";
 import { logConversation } from "./logging.js";
+import { getMemories, formatMemoryBlock } from "./memory.js";
 
 const anthropic = new Anthropic(); // reads ANTHROPIC_API_KEY from env
 const MODEL = process.env.TRACY_MODEL || "claude-sonnet-4-6";
@@ -49,7 +50,20 @@ app.post("/chat", async (req, res) => {
 
     // Resolve where Tracy is: core identity + surface prompt + this surface's tools.
     const resolved = resolveSurface(surface);
-    const toolkit = buildToolkit(resolved.toolSets);
+    const toolkit = buildToolkit(resolved.toolSets, { userId, surface: resolved.id });
+
+    // Per-user memory: load what Tracy remembers about this user and inject it
+    // into her system prompt so she recalls them across sessions. Best-effort —
+    // a memory-store hiccup must never block a reply.
+    let systemPrompt = resolved.systemPrompt;
+    if (userId) {
+      try {
+        const memoryBlock = formatMemoryBlock(await getMemories(userId));
+        if (memoryBlock) systemPrompt += "\n\n---\n\n" + memoryBlock;
+      } catch (err) {
+        console.error("memory load failed:", err.message);
+      }
+    }
 
     const convo = [...messages];
     const toolsUsed = [];
@@ -60,7 +74,7 @@ app.post("/chat", async (req, res) => {
       const params = {
         model: MODEL,
         max_tokens: 1024,
-        system: resolved.systemPrompt,
+        system: systemPrompt,
         messages: convo,
       };
       // Only send tools when this surface actually has some.

@@ -1,12 +1,13 @@
-// Postgres-backed conversation storage.
+// Postgres connection + conversation storage.
 //
-// Used ONLY when DATABASE_URL is set (e.g. on Render, pointed at the managed
-// Postgres). Local dev with no DATABASE_URL keeps using the file logger in
-// src/logging.js — so nothing new is required to run locally.
+// Used when DATABASE_URL is set (e.g. on Render, pointed at the managed
+// Postgres). Local dev with no DATABASE_URL uses file-based fallbacks in the
+// modules that call this (src/logging.js, src/memory.js) — so nothing new is
+// required to run locally.
 //
-// This module stores conversation records only. It never touches the API key.
-// The same consent caveat as file logging applies (see src/logging.js): apps
-// must show users consent language before this is enabled in production.
+// This module never touches the API key. The same consent caveat as file
+// logging applies (see src/logging.js): apps must show users consent language
+// before conversation storage / memory is enabled in production.
 
 import pg from "pg";
 
@@ -33,6 +34,11 @@ function getPool() {
     });
   }
   return pool;
+}
+
+// Shared query helper so other modules (memory) can reuse the same pool.
+export function query(text, params) {
+  return getPool().query(text, params);
 }
 
 // Create the table + indexes once (idempotent). Cached so we don't re-run DDL

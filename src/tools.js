@@ -1,13 +1,53 @@
 // Tracy's tools — the actions she can take on behalf of users.
 //
 // Tools are grouped into named TOOL SETS, one per capability area. Surfaces opt
-// into the tool sets they need (see src/surfaces.js). Nothing here is loaded
-// globally, and nothing assumes a specific client — a surface with no tool sets
-// simply gets a Tracy who talks.
+// into the tool sets they need (see src/surfaces.js). A small CORE set (memory)
+// is always available, because remembering people is part of who Tracy is on
+// every surface. Nothing else assumes a specific client — a surface with no
+// tool sets still gets a Tracy who talks and can remember.
 //
-// Each tool has (1) a schema Claude sees, and (2) an implementation. The
-// implementations below are STUBS: replace the TODO sections with real calls to
-// the relevant backend/API. (Per project plan: BabyResell API wiring comes later.)
+// Tool handlers receive (input, context), where context = { userId, surface }.
+//
+// The BabyResell handlers below are STUBS: replace the TODO sections with real
+// calls to the BabyResell API. (Per project plan: that wiring comes later.)
+
+import { addMemory } from "./memory.js";
+
+// ---------------------------------------------------------------------------
+// Core tool set — available on every surface
+// ---------------------------------------------------------------------------
+
+const coreSchemas = [
+  {
+    name: "remember",
+    description:
+      "Save a durable fact or preference about the CURRENT user so you can " +
+      "recall it in future conversations — e.g. their name, how they like to " +
+      "be helped, what they're selling or shopping for, ongoing context. Use " +
+      "it for things worth remembering long-term, not one-off details. The " +
+      "user's saved notes are provided to you at the start of each conversation.",
+    input_schema: {
+      type: "object",
+      properties: {
+        fact: {
+          type: "string",
+          description: "A concise fact or preference to remember about this user.",
+        },
+      },
+      required: ["fact"],
+    },
+  },
+];
+
+const coreHandlers = {
+  async remember({ fact }, context = {}) {
+    if (!context.userId) {
+      return { status: "not_saved", reason: "No userId on this request, so there's nothing to key memory to." };
+    }
+    const ok = await addMemory(context.userId, fact);
+    return ok ? { status: "remembered", fact } : { status: "not_saved", reason: "storage error" };
+  },
+};
 
 // ---------------------------------------------------------------------------
 // BabyResell tool set
@@ -119,11 +159,12 @@ export const toolSets = {
   babyresell: { schemas: babyresellSchemas, handlers: babyresellHandlers },
 };
 
-// Build a toolkit for a given list of tool-set names: merged schemas + a runner.
+// Build a toolkit for a surface: the always-on core set (memory) plus the named
+// surface tool sets. `context` ({ userId, surface }) is passed to every handler.
 // Unknown tool-set names are ignored (a surface can reference sets not built yet).
-export function buildToolkit(toolSetNames = []) {
-  const schemas = [];
-  const handlers = {};
+export function buildToolkit(toolSetNames = [], context = {}) {
+  const schemas = [...coreSchemas];
+  const handlers = { ...coreHandlers };
 
   for (const name of toolSetNames) {
     const set = toolSets[name];
@@ -137,7 +178,7 @@ export function buildToolkit(toolSetNames = []) {
     async run(name, input) {
       const fn = handlers[name];
       if (!fn) return { error: `Unknown tool: ${name}` };
-      return fn(input);
+      return fn(input, context);
     },
   };
 }
