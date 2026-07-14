@@ -117,6 +117,15 @@
       if ((m = esc.match(/^\s{0,3}#{1,6}\s+(.*)$/))) { closeList(); html += `<div class="md-h">${inlineMd(m[1])}</div>`; continue; }
       if ((m = esc.match(/^\s*[-*+]\s+(.*)$/))) { if (listType !== "ul") { closeList(); html += "<ul>"; listType = "ul"; } html += `<li>${inlineMd(m[1])}</li>`; continue; }
       if ((m = esc.match(/^\s*\d+\.\s+(.*)$/))) { if (listType !== "ol") { closeList(); html += "<ol>"; listType = "ol"; } html += `<li>${inlineMd(m[1])}</li>`; continue; }
+      // Markdown table separator row (|---|---|) — drop it, don't render pipes.
+      if (/^[ \t]*\|?[ \t:|-]*--[ \t:|-]*$/.test(esc)) { closeList(); continue; }
+      // Markdown table data row (| a | b |) — render as clean cells, no raw pipes.
+      if ((m = esc.match(/^\s*\|(.+)\|\s*$/))) {
+        closeList();
+        const cells = m[1].split("|").map((c) => c.trim()).filter(Boolean).map((c) => `<span class="md-cell">${inlineMd(c)}</span>`);
+        html += `<div class="md-row">${cells.join("")}</div>`;
+        continue;
+      }
       if (esc.trim() === "") { closeList(); html += "<br>"; continue; }
       closeList(); html += `<div>${inlineMd(esc)}</div>`;
     }
@@ -134,8 +143,16 @@
     s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1$2");
     s = s.replace(/(^|[^_])_([^_\n]+)_/g, "$1$2");
     s = s.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
+    // Tables & dashes — otherwise she reads "pipe" and "dash dash dash" aloud.
+    s = s.replace(/^[ \t]*\|?[ \t:|-]*--[ \t:|-]*$/gm, "");        // separator rows |---|---|
+    s = s.replace(/^[ \t]*\|(.+)\|[ \t]*$/gm, (_, row) =>          // | a | b | c | -> "a, b, c"
+      row.split("|").map((c) => c.trim()).filter(Boolean).join(", "));
+    s = s.replace(/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/gm, "");  // horizontal rules --- ***
+    s = s.replace(/\s[—–]\s/g, ", ");                             // " — " -> a spoken pause
+    s = s.replace(/[—–]/g, " ");                                  // any leftover em/en dash
     s = s.replace(/^\s{0,3}#{1,6}\s+/gm, "");
     s = s.replace(/^\s*[-*+]\s+/gm, "");
+    s = s.replace(/\n{3,}/g, "\n\n");
     s = s.replace(/[ \t]{2,}/g, " ");
     return s.trim();
   }
