@@ -1,6 +1,8 @@
-# Secrets — never commit real keys
+# Secrets — never commit real keys.
+# Ignore .env and every .env.* variant, but keep the committed template.
 .env
-.env.local
+.env.*
+!.env.example
 
 # Dependencies
 node_modules/
