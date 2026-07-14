@@ -10,11 +10,15 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import { fileURLToPath } from "url";
+import path from "path";
 import Anthropic from "@anthropic-ai/sdk";
 import { buildToolkit } from "./tools.js";
 import { resolveSurface } from "./surfaces.js";
 import { logConversation } from "./logging.js";
 import { getMemories, formatMemoryBlock } from "./memory.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const anthropic = new Anthropic(); // reads ANTHROPIC_API_KEY from env
 const MODEL = process.env.TRACY_MODEL || "claude-sonnet-4-6";
@@ -33,6 +37,12 @@ const CORS_ORIGINS = process.env.CORS_ORIGINS
 app.use(cors(CORS_ORIGINS ? { origin: CORS_ORIGINS } : undefined));
 
 app.use(express.json({ limit: "2mb" }));
+
+// Serve the frontend (web/) from this same server, so one URL gives both the
+// UI and the API: GET / → Tracy's chat app, POST /chat → the API. You can still
+// deploy web/ separately to GitHub Pages / Vercel — this is just a convenience
+// so the backend URL isn't a bare "Cannot GET /".
+app.use(express.static(path.join(__dirname, "..", "web")));
 
 // POST /chat
 // Body: {
