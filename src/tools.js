@@ -259,11 +259,27 @@ export const toolSets = {
   babyresell_admin: { schemas: babyresellAdminSchemas, handlers: babyresellAdminHandlers },
 };
 
-// Build a toolkit for a surface: the always-on core set (memory) plus the named
-// surface tool sets. `context` ({ userId, surface }) is passed to every handler.
-// Unknown tool-set names are ignored (a surface can reference sets not built yet).
+// Server-side tools run on Anthropic's side (no local handler): Tracy asks, the
+// API executes them and returns the results inside the same response. Web search
+// lets her answer questions about current/recent info instead of guessing.
+//
+// Enabled by default; set TRACY_WEB_SEARCH=off to disable. TRACY_WEB_SEARCH_MAX_USES
+// caps how many searches she can run per reply (cost control; ~$10 / 1000 searches).
+// The `web_search_20260209` variant needs a recent model (Sonnet 4.6+ / Opus 4.6+),
+// which is what TRACY_MODEL defaults to.
+function serverToolSchemas() {
+  const on = (process.env.TRACY_WEB_SEARCH || "on").toLowerCase() !== "off";
+  if (!on) return [];
+  const maxUses = Number(process.env.TRACY_WEB_SEARCH_MAX_USES || 5) || 5;
+  return [{ type: "web_search_20260209", name: "web_search", max_uses: maxUses }];
+}
+
+// Build a toolkit for a surface: the always-on core set (memory + web search)
+// plus the named surface tool sets. `context` ({ userId, surface }) is passed to
+// every handler. Unknown tool-set names are ignored (a surface can reference sets
+// not built yet).
 export function buildToolkit(toolSetNames = [], context = {}) {
-  const schemas = [...coreSchemas];
+  const schemas = [...coreSchemas, ...serverToolSchemas()];
   const handlers = { ...coreHandlers };
 
   for (const name of toolSetNames) {

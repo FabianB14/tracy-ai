@@ -105,6 +105,20 @@ app.post("/chat", requireAuth, async (req, res) => {
 
       response = await client.messages.create(params);
 
+      // Record server-side tool calls (e.g. web_search) for logging/visibility.
+      // These run on Anthropic's side, so there's nothing to execute here.
+      for (const block of response.content) {
+        if (block.type === "server_tool_use") toolsUsed.push(block.name);
+      }
+
+      // A long server-tool turn (e.g. several web searches) can stop with
+      // "pause_turn". Resume by re-sending the conversation as-is — no extra
+      // user message; the API continues where it left off.
+      if (response.stop_reason === "pause_turn") {
+        convo.push({ role: "assistant", content: response.content });
+        continue;
+      }
+
       if (response.stop_reason !== "tool_use") break;
 
       // Execute every tool Claude asked for, append results, loop again.
