@@ -77,9 +77,20 @@ there.
 
 ## Logging & consent
 
-Every `/chat` exchange is logged for debugging and future model training. **This
-requires user-consent language in the apps before production** — see the note at
-the top of `src/logging.js`. `logs/` is gitignored.
+Every `/chat` exchange is recorded (`{timestamp, userId, surface, messages,
+reply, toolsUsed}`) for debugging and future model training. Two backends,
+chosen automatically:
+
+- **`DATABASE_URL` set** (e.g. on Render, pointed at managed Postgres) → written
+  to a `conversations` table (`src/db.js`). Survives redeploys. Table + indexes
+  are created automatically on first write. Falls back to the file if a DB write
+  fails.
+- **`DATABASE_URL` unset** → appended to `logs/conversations.jsonl` (zero-config
+  local dev). `logs/` is gitignored.
+
+**This requires user-consent language in the apps before production** — see the
+note at the top of `src/logging.js`. On Render, set `DATABASE_URL` to your
+Postgres **Internal Database URL**.
 
 ## Personality & safety tests
 
