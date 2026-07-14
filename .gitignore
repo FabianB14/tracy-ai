@@ -1,0 +1,14 @@
+# Secrets — never commit real keys
+.env
+.env.local
+
+# Dependencies
+node_modules/
+
+# Logs (conversation logs may contain user data — keep out of git)
+logs/
+*.log
+npm-debug.log*
+
+# OS / editor cruft
+.DS_Store

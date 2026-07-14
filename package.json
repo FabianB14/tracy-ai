@@ -1,0 +1,16 @@
+{
+  "name": "tracy-assistant",
+  "version": "0.1.0",
+  "description": "Tracy — the Interverse AI assistant (one brain, many surfaces)",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.0",
+    "dotenv": "^16.4.0",
+    "express": "^4.19.0"
+  }
+}
