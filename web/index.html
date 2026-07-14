@@ -28,6 +28,7 @@
             <option value="carparts">Car Parts</option>
           </select>
         </label>
+        <button id="handsfree-btn" class="icon-btn" aria-label="Hands-free" title="Hands-free (open mic) — talk without pressing the mic">🎧</button>
         <span id="status-dot" class="status-dot" title="Connection status"></span>
         <button id="settings-btn" class="icon-btn" aria-label="Settings" title="Settings">⚙</button>
       </div>
@@ -81,8 +82,22 @@
       <label class="row">
         <input id="cfg-autosend" type="checkbox" /> Auto-send after voice input
       </label>
+      <label class="row">
+        <input id="cfg-handsfree" type="checkbox" /> Hands-free (open mic)
+      </label>
       <label>Voice
         <select id="cfg-voice"></select>
+      </label>
+      <label>Speed <span id="cfg-rate-val" class="rangeval"></span>
+        <input id="cfg-rate" type="range" min="0.6" max="1.4" step="0.05" />
+      </label>
+      <label>Pitch <span id="cfg-pitch-val" class="rangeval"></span>
+        <input id="cfg-pitch" type="range" min="0.6" max="1.4" step="0.05" />
+      </label>
+      <label>Voice corrections
+        <textarea id="cfg-corrections" rows="4" spellcheck="false"
+          placeholder="heard = meant (one per line)&#10;e.g. chico = Chicco"></textarea>
+        <small class="hint">Tracy also learns these automatically when you fix a transcript before sending.</small>
       </label>
       <div class="modal-actions">
         <button id="cfg-clear" class="ghost-btn">Clear chat</button>
@@ -92,6 +107,7 @@
   </div>
 
   <script src="./config.js"></script>
+  <script src="./corrections.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
