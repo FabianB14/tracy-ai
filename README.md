@@ -124,6 +124,16 @@ token (stored per-browser; a new browser must redeem again). The page and
 - Enabling: on Render set `AUTH_SECRET` (e.g. `openssl rand -hex 32`) and either
   `ACCESS_KEYS` or generate DB keys. Revoke a DB key by setting `active=false`.
 
+## Bring your own key (BYOK)
+
+A team member can paste their own Anthropic API key in **Settings** → "Your
+Anthropic API key". When set, their `/chat` requests are sent with an
+`X-Anthropic-Key` header and Tracy uses *that* key for the request — so usage
+bills their account instead of the shared server key. The key is stored only in
+their browser, used per-request, and never logged. Blank = the shared key.
+(An Anthropic **API key** from console.anthropic.com — not a Claude Pro/Max
+subscription.)
+
 ## Personality & safety tests
 
 `personality-tests.md` documents 12 tricky scenarios (expired car seat, rude

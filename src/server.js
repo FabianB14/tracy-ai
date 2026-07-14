@@ -63,6 +63,13 @@ app.post("/chat", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "messages array required" });
     }
 
+    // Bring-your-own-key: a team member can supply their own Anthropic API key
+    // (from Settings, sent as the X-Anthropic-Key header) so usage bills THEIR
+    // account. It is used only for this request and never logged. Falls back to
+    // the shared server key when absent.
+    const byok = (req.headers["x-anthropic-key"] || "").trim();
+    const client = byok.startsWith("sk-ant-") ? new Anthropic({ apiKey: byok }) : anthropic;
+
     // Resolve where Tracy is: core identity + surface prompt + this surface's tools.
     const resolved = resolveSurface(surface);
     const toolkit = buildToolkit(resolved.toolSets, { userId, surface: resolved.id });
@@ -95,7 +102,7 @@ app.post("/chat", requireAuth, async (req, res) => {
       // Only send tools when this surface actually has some.
       if (toolkit.schemas.length > 0) params.tools = toolkit.schemas;
 
-      response = await anthropic.messages.create(params);
+      response = await client.messages.create(params);
 
       if (response.stop_reason !== "tool_use") break;
 
@@ -138,6 +145,12 @@ app.post("/chat", requireAuth, async (req, res) => {
     res.json({ reply: text, surface: resolved.id, toolsUsed });
   } catch (err) {
     console.error(err);
+    // If a user supplied their own key and it was rejected, tell them plainly.
+    // Use 400 (not 401) so the frontend doesn't mistake it for the access gate.
+    const hadKey = (req.headers["x-anthropic-key"] || "").trim().startsWith("sk-ant-");
+    if (hadKey && (err?.status === 401 || err?.status === 403)) {
+      return res.status(400).json({ error: "Your Anthropic API key was rejected. Check it in Settings, or clear it to use the shared key." });
+    }
     res.status(500).json({ error: "Tracy hit a snag. Try again in a moment." });
   }
 });

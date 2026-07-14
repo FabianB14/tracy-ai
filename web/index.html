@@ -94,6 +94,11 @@
       <label>User ID
         <input id="cfg-user" type="text" />
       </label>
+      <label>Your Anthropic API key (optional)
+        <input id="cfg-apikey" type="password" autocomplete="off" spellcheck="false"
+               placeholder="sk-ant-…  (blank = use the shared key)" />
+        <small class="hint">Use your own key so usage bills your Anthropic account. Stored only in this browser, sent straight to the backend. Get one at console.anthropic.com — a Claude Pro/Max subscription is not an API key.</small>
+      </label>
       <label class="row">
         <input id="cfg-autospeak" type="checkbox" /> Speak Tracy's replies aloud
       </label>

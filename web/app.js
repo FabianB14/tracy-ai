@@ -27,6 +27,7 @@
     rate: store.get("rate", 1.0),
     pitch: store.get("pitch", 1.0),
     silenceMs: store.get("silenceMs", 2500), // pause after you stop before sending
+    apiKey: store.get("apiKey", ""),         // optional bring-your-own Anthropic key
   };
   if (!settings.userId) {
     settings.userId = "web-" + Math.random().toString(36).slice(2, 10);
@@ -182,6 +183,7 @@
       const headers = { "Content-Type": "application/json" };
       const tok = getToken();
       if (tok) headers.Authorization = "Bearer " + tok;
+      if (settings.apiKey) headers["X-Anthropic-Key"] = settings.apiKey; // bill your own account
       const res = await fetch(api() + "/chat", {
         method: "POST",
         headers,
@@ -407,6 +409,7 @@
   function openSettings() {
     $("cfg-backend").value = settings.backendUrl;
     $("cfg-user").value = settings.userId;
+    $("cfg-apikey").value = settings.apiKey || "";
     $("cfg-autospeak").checked = settings.autoSpeak;
     $("cfg-autosend").checked = settings.autoSend;
     $("cfg-handsfree").checked = handsFree;
@@ -444,12 +447,13 @@
   function saveSettings() {
     settings.backendUrl = $("cfg-backend").value.trim() || settings.backendUrl;
     settings.userId = $("cfg-user").value.trim() || settings.userId;
+    settings.apiKey = $("cfg-apikey").value.trim();
     settings.autoSpeak = $("cfg-autospeak").checked;
     settings.autoSend = $("cfg-autosend").checked;
     settings.rate = +$("cfg-rate").value; settings.pitch = +$("cfg-pitch").value;
     settings.silenceMs = Math.round((+$("cfg-silence").value) * 1000);
     const vsel = $("cfg-voice"); settings.voiceURI = vsel && vsel.value ? vsel.value : settings.voiceURI;
-    for (const k of ["backendUrl", "userId", "autoSpeak", "autoSend", "voiceURI", "rate", "pitch", "silenceMs"]) store.set(k, settings[k]);
+    for (const k of ["backendUrl", "userId", "apiKey", "autoSpeak", "autoSend", "voiceURI", "rate", "pitch", "silenceMs"]) store.set(k, settings[k]);
     if (Corrections) { Corrections.init(settings.userId); Corrections.replaceAll(parseCorrections($("cfg-corrections").value)); }
     setHandsFree($("cfg-handsfree").checked);
     modal.hidden = true;
