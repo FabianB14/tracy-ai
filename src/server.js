@@ -19,6 +19,7 @@ import { logConversation } from "./logging.js";
 import { getMemories, formatMemoryBlock } from "./memory.js";
 import { authEnabled, requireAuth, handleAuth } from "./auth.js";
 import { babyresellDiag, pingStats } from "./babyresell.js";
+import { getAdminIds } from "./tools.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -183,7 +184,7 @@ app.get("/health", (_req, res) => res.json({ ok: true, assistant: "Tracy", authR
 // If userIdIsAdmin is false, the live ping is skipped (same default-deny as the
 // real tools) so this can't be used to probe your stats.
 app.get("/diag", async (req, res) => {
-  const allow = (process.env.ADMIN_USER_IDS || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const allow = getAdminIds();
   const userId = String(req.query.userId || "").trim();
   const userIdIsAdmin = allow.length > 0 && userId !== "" && allow.includes(userId);
 

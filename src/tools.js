@@ -158,9 +158,20 @@ const babyresellHandlers = {
 // surface. It's gated to an allowlist of admin userIds (ADMIN_USER_IDS env);
 // if that's unset, the tools refuse — default-deny for sensitive data.
 
+// Parse the ADMIN_USER_IDS allowlist forgivingly. Users set this by hand in a
+// hosting dashboard, so accept any sane separator — commas, spaces, or line
+// breaks — and strip stray quotes/brackets. This prevents the classic footgun
+// where "id1 id2" (space instead of comma) or a pasted newline silently matches
+// nobody. Exported so /diag reports the exact same parsing the gate uses.
+export function getAdminIds() {
+  return (process.env.ADMIN_USER_IDS || "")
+    .split(/[\s,]+/)
+    .map((s) => s.replace(/^["'\[\]]+|["'\[\]]+$/g, "").trim())
+    .filter(Boolean);
+}
+
 function isAdminUser(context) {
-  const allow = (process.env.ADMIN_USER_IDS || "")
-    .split(",").map((s) => s.trim()).filter(Boolean);
+  const allow = getAdminIds();
   return allow.length > 0 && context && allow.includes(context.userId);
 }
 
