@@ -423,8 +423,17 @@
       if (raw) armSend(); // any speech (even interim) restarts the pause countdown
     };
   } else {
-    elMic.disabled = true; elHF.disabled = true;
-    elMic.title = elHF.title = "Voice input isn't supported in this browser (try Chrome/Edge, or Chrome on Android).";
+    // Don't hard-disable (a disabled button gives no tap feedback and looks
+    // broken) — keep it tappable and explain on tap. iOS Safari commonly lacks
+    // SpeechRecognition entirely.
+    elMic.title = elHF.title = "Voice input isn't available in this browser.";
+  }
+
+  let warnedNoVoice = false;
+  function noVoiceMsg() {
+    if (warnedNoVoice) return;
+    warnedNoVoice = true;
+    addMessage("system", "Voice input isn't available in this browser — Safari on iPhone doesn't support it reliably. You can type here, and Tracy will still talk. (A native app version fixes this.)");
   }
 
   function startRecognition() { if (!recognition || listening || speaking || busy) return; try { recognition.start(); } catch {} }
@@ -435,16 +444,18 @@
   function maybeListen() { if (speaking || busy || listening) return; if (handsFree || sendTimer) startRecognition(); }
 
   function toggleMic() {
-    if (!recognition) return;
-    primeTTS(); stopSpeaking();
+    primeTTS(); // unlock TTS on this tap even if voice input is unavailable
+    if (!recognition) { noVoiceMsg(); return; }
+    stopSpeaking();
     if (listening) { clearSend(); resetBuffers(); stopRecognition(); }
     else { resetBuffers(); startRecognition(); }
   }
   function setHandsFree(on) {
+    primeTTS();
+    if (on && !recognition) { noVoiceMsg(); return; } // can't go hands-free without voice input
     handsFree = on; settings.handsFree = on; store.set("handsFree", on);
     elHF.classList.toggle("active", on);
     const cb = $("cfg-handsfree"); if (cb) cb.checked = on;
-    primeTTS();
     if (on) { stopSpeaking(); resetBuffers(); startRecognition(); }
     else { clearTimeout(restartTimer); clearSend(); resetBuffers(); stopRecognition(); }
   }
@@ -532,6 +543,15 @@
   // Prime iOS text-to-speech on the first interaction anywhere on the page.
   ["pointerdown", "keydown", "touchend"].forEach((ev) =>
     document.addEventListener(ev, primeTTS, { capture: true, once: true }));
+
+  // Explicit press feedback (iOS Safari doesn't reliably paint :active on tap).
+  [elMic, elHF, $("send-btn")].forEach((el) => {
+    if (!el) return;
+    const on = () => el.classList.add("pressing");
+    const off = () => el.classList.remove("pressing");
+    el.addEventListener("pointerdown", on);
+    ["pointerup", "pointercancel", "pointerleave"].forEach((e) => el.addEventListener(e, off));
+  });
 
   if (synth) { loadVoices(); synth.onvoiceschanged = loadVoices; }
   if (handsFree) elHF.classList.add("active"); // restored on next user gesture (mic needs a gesture to start)

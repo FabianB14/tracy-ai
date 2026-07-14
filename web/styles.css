@@ -183,6 +183,8 @@ body::before {
   box-shadow: var(--glow); transition: transform .1s, filter .2s;
 }
 .mic-btn:active, .send-btn:active { transform: scale(.94); }
+/* JS-driven press feedback (iOS Safari doesn't reliably show :active on tap) */
+.mic-btn.pressing, .send-btn.pressing, .hf-btn.pressing { transform: scale(.9); filter: brightness(1.25); }
 .mic-btn.listening { background: linear-gradient(135deg, var(--magenta), var(--violet)); animation: micpulse 1s ease-in-out infinite; }
 .mic-btn:disabled, .hf-btn:disabled { opacity: .4; cursor: not-allowed; filter: grayscale(.6); }
 @keyframes micpulse { 0%,100% { box-shadow: 0 0 20px rgba(255,78,205,.5);} 50% { box-shadow: 0 0 40px rgba(255,78,205,.95);} }
