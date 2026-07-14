@@ -13,6 +13,7 @@
 
 import { addMemory } from "./memory.js";
 import { babyresellConfigured, getStats, getActivity, getReportStats, getOpenReports, getShippingBacklog } from "./babyresell.js";
+import { geminiConfigured, webResearch, analyzeMedia } from "./gemini.js";
 
 // ---------------------------------------------------------------------------
 // Core tool set — available on every surface
@@ -259,28 +260,94 @@ export const toolSets = {
   babyresell_admin: { schemas: babyresellAdminSchemas, handlers: babyresellAdminHandlers },
 };
 
-// Server-side tools run on Anthropic's side (no local handler): Tracy asks, the
-// API executes them and returns the results inside the same response. Web search
-// lets her answer questions about current/recent info instead of guessing.
+// ---------------------------------------------------------------------------
+// Web search & media — provider split (Claude orchestrates, Gemini as a tool)
+// ---------------------------------------------------------------------------
+// Two ways Tracy looks things up, chosen by which providers are configured:
+//   • Anthropic web_search — server-side tool; the API runs the search inline.
+//   • Gemini web_research  — handler tool backed by Gemini + Google Search
+//     grounding, for current events / live info. When a Gemini key is present
+//     Tracy uses this INSTEAD of Anthropic search (never both — two search
+//     tools confuse the model). Plus analyze_media (YouTube/audio/video).
 //
-// Enabled by default; set TRACY_WEB_SEARCH=off to disable. TRACY_WEB_SEARCH_MAX_USES
-// caps how many searches she can run per reply (cost control; ~$10 / 1000 searches).
-// The `web_search_20260209` variant needs a recent model (Sonnet 4.6+ / Opus 4.6+),
-// which is what TRACY_MODEL defaults to.
-function serverToolSchemas() {
+// Env:
+//   TRACY_WEB_SEARCH=off          disable web search entirely
+//   TRACY_WEB_SEARCH_MAX_USES=5   cap Anthropic searches per reply (cost)
+//   TRACY_SEARCH_PROVIDER=auto    auto | gemini | anthropic
+//                                 (auto = Gemini if GEMINI_API_KEY set, else Anthropic)
+
+const geminiSchemas = [
+  {
+    name: "web_research",
+    description:
+      "Search the live web for current or recent information — today's prices, " +
+      "recent events, news, availability, real-time facts. Returns an answer " +
+      "grounded in web results plus its sources. Use whenever freshness matters " +
+      "and you can't be sure from memory; don't use it for things you already know.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "What to look up, phrased as a search or question." },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "analyze_media",
+    description:
+      "Watch/listen to a media URL and answer a question about it. Best for " +
+      "YouTube links (also other public video/audio URLs). Use when the user " +
+      "shares a video/audio link and wants it summarized or asked about.",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The media URL (e.g. a YouTube link)." },
+        question: { type: "string", description: "What the user wants to know about it. Optional." },
+      },
+      required: ["url"],
+    },
+  },
+];
+
+const geminiHandlers = {
+  web_research: ({ query }) => webResearch(query),
+  analyze_media: ({ url, question }) => analyzeMedia(url, question),
+};
+
+// Which engine backs "search the web": off, "gemini", or "anthropic".
+function searchProvider() {
   const on = (process.env.TRACY_WEB_SEARCH || "on").toLowerCase() !== "off";
-  if (!on) return [];
-  const maxUses = Number(process.env.TRACY_WEB_SEARCH_MAX_USES || 5) || 5;
-  return [{ type: "web_search_20260209", name: "web_search", max_uses: maxUses }];
+  if (!on) return "off";
+  const pref = (process.env.TRACY_SEARCH_PROVIDER || "auto").toLowerCase();
+  if (pref === "anthropic") return "anthropic";
+  if (pref === "gemini") return geminiConfigured() ? "gemini" : "anthropic";
+  return geminiConfigured() ? "gemini" : "anthropic"; // auto
 }
 
-// Build a toolkit for a surface: the always-on core set (memory + web search)
+// Build a toolkit for a surface: the always-on core set (memory + search/media)
 // plus the named surface tool sets. `context` ({ userId, surface }) is passed to
 // every handler. Unknown tool-set names are ignored (a surface can reference sets
 // not built yet).
 export function buildToolkit(toolSetNames = [], context = {}) {
-  const schemas = [...coreSchemas, ...serverToolSchemas()];
+  const schemas = [...coreSchemas];
   const handlers = { ...coreHandlers };
+
+  // Web search: Gemini (handler) when selected, else Anthropic (server tool).
+  const provider = searchProvider();
+  if (provider === "gemini") {
+    schemas.push(geminiSchemas[0]); // web_research
+    handlers.web_research = geminiHandlers.web_research;
+  } else if (provider === "anthropic") {
+    const maxUses = Number(process.env.TRACY_WEB_SEARCH_MAX_USES || 5) || 5;
+    schemas.push({ type: "web_search_20260209", name: "web_search", max_uses: maxUses });
+  }
+
+  // Media analysis (YouTube/audio/video) is Gemini-only; offer it whenever a
+  // Gemini key is configured, independent of the web-search provider choice.
+  if (geminiConfigured()) {
+    schemas.push(geminiSchemas[1]); // analyze_media
+    handlers.analyze_media = geminiHandlers.analyze_media;
+  }
 
   for (const name of toolSetNames) {
     const set = toolSets[name];
