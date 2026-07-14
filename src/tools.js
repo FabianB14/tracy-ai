@@ -12,6 +12,7 @@
 // calls to the BabyResell API. (Per project plan: that wiring comes later.)
 
 import { addMemory } from "./memory.js";
+import { babyresellConfigured, getStats, getActivity } from "./babyresell.js";
 
 // ---------------------------------------------------------------------------
 // Core tool set — available on every surface
@@ -150,6 +151,66 @@ const babyresellHandlers = {
 };
 
 // ---------------------------------------------------------------------------
+// BabyResell admin tool set (business/marketplace stats) — ADMIN ONLY
+// ---------------------------------------------------------------------------
+// Exposes BabyResell's business numbers, so this must never be on a customer
+// surface. It's gated to an allowlist of admin userIds (ADMIN_USER_IDS env);
+// if that's unset, the tools refuse — default-deny for sensitive data.
+
+function isAdminUser(context) {
+  const allow = (process.env.ADMIN_USER_IDS || "")
+    .split(",").map((s) => s.trim()).filter(Boolean);
+  return allow.length > 0 && context && allow.includes(context.userId);
+}
+
+const babyresellAdminSchemas = [
+  {
+    name: "get_babyresell_stats",
+    description:
+      "Get BabyResell's current business/marketplace stats: total users, total " +
+      "and active listings, total transactions, platform revenue (the sum of " +
+      "platform fees Interverse has earned), and 30-day growth (new users, " +
+      "listings, transactions). Use whenever the user asks how BabyResell is " +
+      "doing, its numbers, revenue, or growth.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "get_babyresell_activity",
+    description:
+      "Get BabyResell's most recent activity: newest users, newest listings, " +
+      "and newest transactions. Use for 'what's happened lately / recently' questions.",
+    input_schema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "How many recent items per category (default 10)." },
+      },
+    },
+  },
+];
+
+async function callBabyresell(fn, context) {
+  if (!isAdminUser(context)) {
+    return { error: "Business stats are admin-only. Set ADMIN_USER_IDS to your userId to enable this." };
+  }
+  if (!babyresellConfigured()) {
+    return { note: "BabyResell API isn't connected yet. Set BABYRESELL_API_URL and admin credentials (see .env.example)." };
+  }
+  try {
+    return await fn();
+  } catch (err) {
+    if (err.message === "auth-failed") return { error: "BabyResell rejected the admin credentials (token expired, wrong secret, or not an admin)." };
+    if (err.message === "not-configured") return { note: "BabyResell API isn't fully configured." };
+    return { error: `Couldn't reach BabyResell: ${err.message}.` };
+  }
+}
+
+const babyresellAdminHandlers = {
+  get_babyresell_stats: (_input, context) => callBabyresell(() => getStats().then((stats) => ({ source: "babyresell", stats })), context),
+  get_babyresell_activity: ({ limit } = {}, context) =>
+    callBabyresell(() => getActivity(limit || 10).then((activity) => ({ source: "babyresell", activity })), context),
+};
+
+// ---------------------------------------------------------------------------
 // Tool-set registry
 // ---------------------------------------------------------------------------
 // Add a new capability area by adding an entry here, then reference it from a
@@ -157,6 +218,7 @@ const babyresellHandlers = {
 
 export const toolSets = {
   babyresell: { schemas: babyresellSchemas, handlers: babyresellHandlers },
+  babyresell_admin: { schemas: babyresellAdminSchemas, handlers: babyresellAdminHandlers },
 };
 
 // Build a toolkit for a surface: the always-on core set (memory) plus the named

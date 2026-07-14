@@ -35,6 +35,9 @@ const SURFACES = {
   carparts:   { prompt: "carparts",   toolSets: [] }, // fitment tools TBD
   desktop:    { prompt: "desktop",    toolSets: [] },
   mobile:     { prompt: "mobile",     toolSets: [] },
+  // Admin/owner surface — business stats for the founder. Tools are additionally
+  // gated to ADMIN_USER_IDS, so this surface is safe even if requested directly.
+  admin:      { prompt: "admin",      toolSets: ["babyresell_admin"] },
   // `game:NAME` requests resolve to this generic game surface, with NAME passed
   // through to the prompt. See resolveSurface().
   game:       { prompt: "game",       toolSets: [] },
