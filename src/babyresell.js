@@ -63,6 +63,30 @@ async function apiGet(path) {
   return json && json.data !== undefined ? json.data : json;
 }
 
+// Non-secret snapshot of how BabyResell auth is configured, for /diag. Never
+// returns key material — only which method is active and whether the base URL
+// and credentials are present.
+export function babyresellDiag() {
+  let authMethod = "none";
+  if (SERVICE_KEY) authMethod = "service-key";
+  else if (JWT_SECRET && ADMIN_USER_ID) authMethod = "self-minted-jwt";
+  else if (ADMIN_TOKEN) authMethod = "bearer-token";
+  return { baseUrl: BASE || null, baseUrlSet: Boolean(BASE), authMethod, configured: babyresellConfigured() };
+}
+
+// Live end-to-end check: actually call BabyResell's stats endpoint and report
+// only success/failure (NOT the numbers). Distinguishes "key rejected" from
+// "can't reach it" so we know whether the merge/env or the network is the issue.
+export async function pingStats() {
+  try {
+    const stats = await getStats();
+    return { ok: true, reachedBabyresell: true, gotStats: Boolean(stats && typeof stats === "object") };
+  } catch (err) {
+    const reason = err.message || String(err);
+    return { ok: false, reason };
+  }
+}
+
 export function getStats() { return apiGet("/api/admin/dashboard/stats"); }
 export function getActivity(limit = 10) { return apiGet(`/api/admin/dashboard/activity?limit=${encodeURIComponent(limit)}`); }
 export function getReportStats() { return apiGet("/api/admin/reports/stats"); }
