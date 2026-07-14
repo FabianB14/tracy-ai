@@ -47,8 +47,10 @@ function authHeader() {
 async function apiGet(path) {
   const auth = authHeader();
   if (!BASE || !auth) throw new Error("not-configured");
+  // Timeout so a cold/down BabyResell (free tier spins down) can't hang /chat.
   const res = await fetch(BASE + path, {
     headers: { Authorization: auth, "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(20000),
   });
   if (res.status === 401 || res.status === 403) throw new Error("auth-failed");
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -58,3 +60,6 @@ async function apiGet(path) {
 
 export function getStats() { return apiGet("/api/admin/dashboard/stats"); }
 export function getActivity(limit = 10) { return apiGet(`/api/admin/dashboard/activity?limit=${encodeURIComponent(limit)}`); }
+export function getReportStats() { return apiGet("/api/admin/reports/stats"); }
+export function getOpenReports() { return apiGet("/api/admin/reports?status=pending"); }
+export function getShippingBacklog() { return apiGet("/api/admin/labels/stats"); }

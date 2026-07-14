@@ -12,7 +12,7 @@
 // calls to the BabyResell API. (Per project plan: that wiring comes later.)
 
 import { addMemory } from "./memory.js";
-import { babyresellConfigured, getStats, getActivity } from "./babyresell.js";
+import { babyresellConfigured, getStats, getActivity, getReportStats, getOpenReports, getShippingBacklog } from "./babyresell.js";
 
 // ---------------------------------------------------------------------------
 // Core tool set — available on every surface
@@ -186,6 +186,22 @@ const babyresellAdminSchemas = [
       },
     },
   },
+  {
+    name: "get_babyresell_moderation",
+    description:
+      "Get BabyResell's moderation queue: counts of pending/reviewing/open/total " +
+      "item reports, plus the list of open (pending) reports. Use when asked what " +
+      "needs review/moderation, or about reported items/users.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "get_babyresell_shipping",
+    description:
+      "Get BabyResell's shipping backlog: how many paid orders still need a " +
+      "shipping label, and how many had label errors. Use when asked about " +
+      "shipping status/backlog or orders waiting to ship.",
+    input_schema: { type: "object", properties: {} },
+  },
 ];
 
 async function callBabyresell(fn, context) {
@@ -204,10 +220,32 @@ async function callBabyresell(fn, context) {
   }
 }
 
+// Trim a populated report to the essentials (drop image blobs etc.).
+function trimReport(r) {
+  return {
+    id: r._id || r.id,
+    status: r.status,
+    reason: r.reason || r.category || r.type,
+    details: r.description || r.details,
+    createdAt: r.createdAt,
+    reporter: r.reporter && r.reporter.username,
+    reportedUser: r.reportedUser && r.reportedUser.username,
+    item: r.item && { title: r.item.title, price: r.item.price, status: r.item.status },
+  };
+}
+
 const babyresellAdminHandlers = {
   get_babyresell_stats: (_input, context) => callBabyresell(() => getStats().then((stats) => ({ source: "babyresell", stats })), context),
   get_babyresell_activity: ({ limit } = {}, context) =>
     callBabyresell(() => getActivity(limit || 10).then((activity) => ({ source: "babyresell", activity })), context),
+  get_babyresell_moderation: (_input, context) =>
+    callBabyresell(async () => {
+      const [stats, reports] = await Promise.all([getReportStats(), getOpenReports()]);
+      const list = Array.isArray(reports) ? reports.slice(0, 20).map(trimReport) : [];
+      return { source: "babyresell", moderation: stats, openReports: list };
+    }, context),
+  get_babyresell_shipping: (_input, context) =>
+    callBabyresell(() => getShippingBacklog().then((backlog) => ({ source: "babyresell", shipping: backlog })), context),
 };
 
 // ---------------------------------------------------------------------------
