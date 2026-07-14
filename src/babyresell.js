@@ -18,12 +18,13 @@
 import crypto from "crypto";
 
 const BASE = (process.env.BABYRESELL_API_URL || "").replace(/\/$/, "");
+const SERVICE_KEY = process.env.BABYRESELL_SERVICE_KEY || ""; // preferred: read-only service pass
 const ADMIN_TOKEN = process.env.BABYRESELL_ADMIN_TOKEN || "";
 const JWT_SECRET = process.env.BABYRESELL_JWT_SECRET || "";
 const ADMIN_USER_ID = process.env.BABYRESELL_ADMIN_USER_ID || "";
 
 export function babyresellConfigured() {
-  return Boolean(BASE) && (Boolean(ADMIN_TOKEN) || (Boolean(JWT_SECRET) && Boolean(ADMIN_USER_ID)));
+  return Boolean(BASE) && (Boolean(SERVICE_KEY) || Boolean(ADMIN_TOKEN) || (Boolean(JWT_SECRET) && Boolean(ADMIN_USER_ID)));
 }
 
 // Mint a standard HS256 JWT ({ id, iat, exp }) that BabyResell's jwt.verify
@@ -38,18 +39,22 @@ function mintToken() {
   return `${data}.${sig}`;
 }
 
-function authHeader() {
-  if (JWT_SECRET && ADMIN_USER_ID) return "Bearer " + mintToken();
-  if (ADMIN_TOKEN) return "Bearer " + ADMIN_TOKEN;
+// Preferred: a read-only service pass BabyResell recognizes (X-Service-Key).
+// Falls back to a self-minted admin JWT, then a passthrough Bearer token.
+function buildHeaders() {
+  const h = { "Content-Type": "application/json" };
+  if (SERVICE_KEY) { h["X-Service-Key"] = SERVICE_KEY; return h; }
+  if (JWT_SECRET && ADMIN_USER_ID) { h.Authorization = "Bearer " + mintToken(); return h; }
+  if (ADMIN_TOKEN) { h.Authorization = "Bearer " + ADMIN_TOKEN; return h; }
   return null;
 }
 
 async function apiGet(path) {
-  const auth = authHeader();
-  if (!BASE || !auth) throw new Error("not-configured");
+  const h = buildHeaders();
+  if (!BASE || !h) throw new Error("not-configured");
   // Timeout so a cold/down BabyResell (free tier spins down) can't hang /chat.
   const res = await fetch(BASE + path, {
-    headers: { Authorization: auth, "Content-Type": "application/json" },
+    headers: h,
     signal: AbortSignal.timeout(20000),
   });
   if (res.status === 401 || res.status === 403) throw new Error("auth-failed");
