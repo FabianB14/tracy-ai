@@ -1,0 +1,9 @@
+{
+  "appId": "com.interverse.tracy",
+  "appName": "Tracy",
+  "webDir": "web",
+  "plugins": {
+    "SpeechRecognition": {},
+    "TextToSpeech": {}
+  }
+}

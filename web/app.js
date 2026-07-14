@@ -9,6 +9,8 @@
   const $ = (id) => document.getElementById(id);
   const cfgDefaults = window.TRACY_CONFIG || {};
   const Corrections = window.TracyCorrections;
+  // Native voice (Capacitor iOS/Android app). null in a normal browser → Web Speech.
+  const Native = () => (window.TracyNative && window.TracyNative.isNative) ? window.TracyNative : null;
 
   // ---- Settings (persisted) ----
   const store = {
@@ -282,9 +284,10 @@
   }
 
   function speak(text, bubbleEl) {
-    if (!settings.autoSpeak || !synth) return;
-    synth.cancel();
-    try { synth.resume(); } catch {} // iOS can leave the queue paused after cancel
+    if (!settings.autoSpeak) return;
+    const nat = Native();
+    if (!synth && !nat) return;
+    if (synth) { synth.cancel(); try { synth.resume(); } catch {} } // iOS can leave the queue paused
 
     text = stripMarkdown(text); // don't read "**", "`", "#", etc. aloud
     const cues = buildCues(text);
@@ -313,6 +316,17 @@
       cues.forEach((cue, ci) => { timers.push(setTimeout(() => { curCue = ci; showCue(ci, null); }, acc)); acc += cue.words.length * msPerWord; });
       timers.push(setTimeout(hideCaption, acc + 250));
     };
+
+    // Native TTS (iOS/Android app): reliable voice. No word-boundary events, so
+    // captions roll on the timer.
+    if (nat) {
+      speaking = true; setOrbState("speaking"); if (handsFree) stopRecognition();
+      timerWalk();
+      nat.tts.speak(text, { rate: settings.rate, pitch: settings.pitch }).then(() => {
+        speaking = false; setOrbState(null); clearTimers(); hideCaption(); if (handsFree) restartSoon();
+      });
+      return;
+    }
 
     let started = false;
     const makeUtterance = (withVoice) => {
@@ -356,7 +370,7 @@
       }
     }, 400);
   }
-  function stopSpeaking() { if (synth) synth.cancel(); speaking = false; setOrbState(null); }
+  function stopSpeaking() { if (synth) synth.cancel(); const nat = Native(); if (nat) nat.tts.stop(); speaking = false; setOrbState(null); }
 
   // ---- Speech-to-text (mic) with hands-free + correction ----
   // We decide when you're done: the utterance is sent after `silenceMs` of no
@@ -436,8 +450,45 @@
     addMessage("system", "Voice input isn't available in this browser — Safari on iPhone doesn't support it reliably. You can type here, and Tracy will still talk. (A native app version fixes this.)");
   }
 
-  function startRecognition() { if (!recognition || listening || speaking || busy) return; try { recognition.start(); } catch {} }
-  function stopRecognition() { if (recognition && listening) { try { recognition.stop(); } catch {} } }
+  // Native STT feeds the SAME accumulation pipeline (sessionText → armSend).
+  function onNativeTranscript(text) {
+    sessionText = (text || "").trim();
+    const raw = pendingText();
+    const corrected = Corrections ? Corrections.apply(raw) : raw;
+    elInput.value = corrected;
+    lastSttRaw = raw; lastSttCorrected = corrected;
+    if (raw) armSend();
+  }
+  function onNativeEnd() {
+    listening = false; elMic.classList.remove("listening");
+    if (sessionText) { committed = pendingText(); sessionText = ""; } // commit this phrase
+    if (!speaking) setOrbState(null);
+    restartSoon();
+  }
+
+  let starting = false;
+  async function startRecognition() {
+    if (listening || starting || speaking || busy) return;
+    const nat = Native();
+    if (nat && nat.stt) {
+      starting = true;
+      try {
+        if (!(await nat.stt.available())) { noVoiceMsg(); return; }
+        if (!(await nat.stt.requestPermission())) return;
+        listening = true; elMic.classList.add("listening"); if (!speaking) setOrbState("listening");
+        nat.stt.start(onNativeTranscript, onNativeEnd);
+      } catch { listening = false; }
+      finally { starting = false; }
+      return;
+    }
+    if (!recognition) return;
+    try { recognition.start(); } catch {}
+  }
+  function stopRecognition() {
+    const nat = Native();
+    if (nat && nat.stt && listening) { nat.stt.stop(); listening = false; elMic.classList.remove("listening"); return; }
+    if (recognition && listening) { try { recognition.stop(); } catch {} }
+  }
   function restartSoon() { clearTimeout(restartTimer); restartTimer = setTimeout(maybeListen, 300); }
   // Reopen the mic when appropriate: hands-free, or a one-shot utterance still
   // mid-pause (sendTimer pending). Never while speaking/busy/already listening.
@@ -445,14 +496,14 @@
 
   function toggleMic() {
     primeTTS(); // unlock TTS on this tap even if voice input is unavailable
-    if (!recognition) { noVoiceMsg(); return; }
+    if (!recognition && !Native()) { noVoiceMsg(); return; }
     stopSpeaking();
     if (listening) { clearSend(); resetBuffers(); stopRecognition(); }
     else { resetBuffers(); startRecognition(); }
   }
   function setHandsFree(on) {
     primeTTS();
-    if (on && !recognition) { noVoiceMsg(); return; } // can't go hands-free without voice input
+    if (on && !recognition && !Native()) { noVoiceMsg(); return; } // can't go hands-free without voice input
     handsFree = on; settings.handsFree = on; store.set("handsFree", on);
     elHF.classList.toggle("active", on);
     const cb = $("cfg-handsfree"); if (cb) cb.checked = on;

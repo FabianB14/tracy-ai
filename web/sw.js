@@ -5,7 +5,7 @@
 // serve a stale UI after an update — hence the version bump below. API calls to
 // the backend are cross-origin and are never handled here.
 
-const CACHE = "tracy-shell-v11";
+const CACHE = "tracy-shell-v12";
 const SHELL = [
   "./",
   "./index.html",
@@ -13,6 +13,7 @@ const SHELL = [
   "./app.js",
   "./config.js",
   "./corrections.js",
+  "./native.bundle.js",
   "./manifest.webmanifest",
   "./icon.svg",
 ];

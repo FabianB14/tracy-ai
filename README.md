@@ -134,6 +134,16 @@ their browser, used per-request, and never logged. Blank = the shared key.
 (An Anthropic **API key** from console.anthropic.com — not a Claude Pro/Max
 subscription.)
 
+## Native apps (Android + iOS)
+
+The `web/` app is wrappable into native apps with Capacitor, which unlocks
+**reliable voice on iPhone** (native speech APIs instead of Safari's limited Web
+Speech). The same code runs as web *and* native: in the app,
+`web/native/bridge.js` (bundled to `web/native.bundle.js`) provides native
+speech-to-text and text-to-speech via `window.TracyNative`; in a browser it's
+inert and Tracy falls back to the Web Speech API. See **[MOBILE.md](MOBILE.md)**
+for the full build steps (Android Studio / Xcode, permissions).
+
 ## Personality & safety tests
 
 `personality-tests.md` documents 12 tricky scenarios (expired car seat, rude
