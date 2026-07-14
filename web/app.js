@@ -260,7 +260,8 @@
   function primeTTS() {
     if (ttsPrimed || !synth) return;
     ttsPrimed = true;
-    try { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; synth.speak(u); } catch {}
+    // Canonical iOS unlock: speak an empty utterance inside the user gesture.
+    try { synth.speak(new SpeechSynthesisUtterance("")); } catch {}
   }
 
   // Split text into short caption "cues" (like CC lines): break on clause/sentence
@@ -313,33 +314,47 @@
       timers.push(setTimeout(hideCaption, acc + 250));
     };
 
-    const u = new SpeechSynthesisUtterance(text);
-    const v = pickVoice(); if (v) u.voice = v;
-    u.rate = settings.rate; u.pitch = settings.pitch;
-
-    u.onstart = () => {
-      speaking = true; setOrbState("speaking"); if (handsFree) stopRecognition();
-      if (cues.length) showCue(0, cues[0].start); curCue = 0;
-      timers.push(setTimeout(() => { if (!gotBoundary) timerWalk(); }, 500)); // boundary fallback
-    };
-    u.onend = () => { speaking = false; setOrbState(null); clearTimers(); hideCaption(); if (handsFree) restartSoon(); };
-    u.onerror = () => { speaking = false; setOrbState(null); clearTimers(); hideCaption(); if (handsFree) restartSoon(); };
-    u.onboundary = (e) => {
-      if (!gotBoundary) { gotBoundary = true; clearTimers(); }
-      const i = e.charIndex;
-      let ci = cues.findIndex((c) => i >= c.start && i < c.end);
-      if (ci === -1) ci = curCue;
-      if (ci === -1) return;
-      if (ci !== curCue) { curCue = ci; showCue(ci, i); }
-      else {
-        const spans = elCaption.children, cue = cues[ci];
-        for (let k = 0; k < spans.length && k < cue.words.length; k++) {
-          const w = cue.words[k];
-          spans[k].classList.toggle("on", i >= w.start && i < w.end);
+    let started = false;
+    const makeUtterance = (withVoice) => {
+      const u = new SpeechSynthesisUtterance(text);
+      // iOS bug: setting utterance.voice can make speech silently not play. The
+      // first try uses the chosen voice; the watchdog retry drops it (system default).
+      if (withVoice) { const v = pickVoice(); if (v) u.voice = v; }
+      u.rate = settings.rate; u.pitch = settings.pitch;
+      u.onstart = () => {
+        started = true; speaking = true; setOrbState("speaking"); if (handsFree) stopRecognition();
+        if (cues.length) showCue(0, cues[0].start); curCue = 0;
+        timers.push(setTimeout(() => { if (!gotBoundary) timerWalk(); }, 500)); // boundary fallback
+      };
+      u.onend = () => { speaking = false; setOrbState(null); clearTimers(); hideCaption(); if (handsFree) restartSoon(); };
+      u.onerror = () => { speaking = false; setOrbState(null); clearTimers(); hideCaption(); if (handsFree) restartSoon(); };
+      u.onboundary = (e) => {
+        if (!gotBoundary) { gotBoundary = true; clearTimers(); }
+        const i = e.charIndex;
+        let ci = cues.findIndex((c) => i >= c.start && i < c.end);
+        if (ci === -1) ci = curCue;
+        if (ci === -1) return;
+        if (ci !== curCue) { curCue = ci; showCue(ci, i); }
+        else {
+          const spans = elCaption.children, cue = cues[ci];
+          for (let k = 0; k < spans.length && k < cue.words.length; k++) {
+            const w = cue.words[k];
+            spans[k].classList.toggle("on", i >= w.start && i < w.end);
+          }
         }
-      }
+      };
+      return u;
     };
-    synth.speak(u);
+
+    synth.speak(makeUtterance(true));
+    // iOS watchdog: if it never started, nudge the queue and retry without a
+    // forced voice (the most common cause of silent speechSynthesis on Safari).
+    setTimeout(() => {
+      if (!started && !synth.speaking && settings.autoSpeak) {
+        try { synth.resume(); } catch {}
+        try { synth.speak(makeUtterance(false)); } catch {}
+      }
+    }, 400);
   }
   function stopSpeaking() { if (synth) synth.cancel(); speaking = false; setOrbState(null); }
 
