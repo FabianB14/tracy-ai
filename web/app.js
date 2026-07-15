@@ -397,13 +397,21 @@
   // ending, decides when to send.
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   let recognition = null, listening = false, restartTimer = null, sendTimer = null;
-  let committed = "";   // finalized text from prior (ended) sessions this utterance
-  let sessionText = ""; // current session's text (final + interim)
+  let committed = "";       // FINALIZED text from prior (ended) sessions this utterance
+  let sessionFinal = "";    // finalized text in the CURRENT session
+  let sessionInterim = "";  // unstable in-progress text (shown live, NEVER committed)
 
-  function pendingText() { return (committed + " " + sessionText).replace(/\s+/g, " ").trim(); }
+  function pendingText() { return (committed + " " + sessionFinal + " " + sessionInterim).replace(/\s+/g, " ").trim(); }
+  // Commit only what the engine finalized — interim words are dropped, so a
+  // session ending mid-phrase can't fold the same partial in twice (the bug that
+  // produced "how'show'show's Baby" on mobile).
+  function commitSession() {
+    if (sessionFinal) committed = (committed + " " + sessionFinal).replace(/\s+/g, " ").trim();
+    sessionFinal = ""; sessionInterim = "";
+  }
   function clearSend() { clearTimeout(sendTimer); sendTimer = null; }
   function armSend() { clearTimeout(sendTimer); sendTimer = setTimeout(endpoint, Math.round(settings.silenceMs)); }
-  function resetBuffers() { committed = ""; sessionText = ""; }
+  function resetBuffers() { committed = ""; sessionFinal = ""; sessionInterim = ""; }
 
   // Fires after a real pause: finalize + send (or leave for manual send).
   function endpoint() {
@@ -428,7 +436,7 @@
     recognition.onstart = () => { listening = true; elMic.classList.add("listening"); if (!speaking) setOrbState("listening"); };
     recognition.onend = () => {
       listening = false; elMic.classList.remove("listening");
-      if (sessionText) { committed = pendingText(); sessionText = ""; } // commit this phrase
+      commitSession(); // fold only finalized text forward; drop interim
       if (!speaking) setOrbState(null);
       // Do NOT clear sendTimer — the pause window decides. Keep listening in
       // hands-free, or (one-shot) while an utterance is still awaiting its pause.
@@ -441,12 +449,15 @@
       // "no-speech" / "aborted" are normal; onend handles the restart.
     };
     recognition.onresult = (e) => {
-      let finalTxt = "", interim = "";
+      // e.results holds the whole current session (continuous). Rebuild final vs
+      // interim from scratch each event — finals accumulate, interim is replaced.
+      const finals = [], interims = [];
       for (let i = 0; i < e.results.length; i++) {
         const r = e.results[i];
-        if (r.isFinal) finalTxt += r[0].transcript; else interim += r[0].transcript;
+        (r.isFinal ? finals : interims).push(r[0].transcript.trim());
       }
-      sessionText = (finalTxt + " " + interim).trim();
+      sessionFinal = finals.join(" ").replace(/\s+/g, " ").trim();
+      sessionInterim = interims.join(" ").replace(/\s+/g, " ").trim();
       const raw = pendingText();
       const corrected = Corrections ? Corrections.apply(raw) : raw;
       elInput.value = corrected;
@@ -469,7 +480,10 @@
 
   // Native STT feeds the SAME accumulation pipeline (sessionText → armSend).
   function onNativeTranscript(text) {
-    sessionText = (text || "").trim();
+    // Native plugins return the session's best transcript so far (stable). Treat
+    // it as the session's final text (replace, don't append) — never as interim.
+    sessionFinal = (text || "").replace(/\s+/g, " ").trim();
+    sessionInterim = "";
     const raw = pendingText();
     const corrected = Corrections ? Corrections.apply(raw) : raw;
     elInput.value = corrected;
@@ -478,7 +492,7 @@
   }
   function onNativeEnd() {
     listening = false; elMic.classList.remove("listening");
-    if (sessionText) { committed = pendingText(); sessionText = ""; } // commit this phrase
+    commitSession(); // fold only finalized text forward
     if (!speaking) setOrbState(null);
     restartSoon();
   }
