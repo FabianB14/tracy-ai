@@ -18,6 +18,8 @@ import { resolveSurface } from "./surfaces.js";
 import { logConversation } from "./logging.js";
 import { getMemories, formatMemoryBlock } from "./memory.js";
 import { authEnabled, requireAuth, handleAuth } from "./auth.js";
+import { babyresellDiag, pingStats } from "./babyresell.js";
+import { getAdminIds } from "./tools.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -104,6 +106,20 @@ app.post("/chat", requireAuth, async (req, res) => {
 
       response = await client.messages.create(params);
 
+      // Record server-side tool calls (e.g. web_search) for logging/visibility.
+      // These run on Anthropic's side, so there's nothing to execute here.
+      for (const block of response.content) {
+        if (block.type === "server_tool_use") toolsUsed.push(block.name);
+      }
+
+      // A long server-tool turn (e.g. several web searches) can stop with
+      // "pause_turn". Resume by re-sending the conversation as-is — no extra
+      // user message; the API continues where it left off.
+      if (response.stop_reason === "pause_turn") {
+        convo.push({ role: "assistant", content: response.content });
+        continue;
+      }
+
       if (response.stop_reason !== "tool_use") break;
 
       // Execute every tool Claude asked for, append results, loop again.
@@ -156,6 +172,44 @@ app.post("/chat", requireAuth, async (req, res) => {
 });
 
 app.get("/health", (_req, res) => res.json({ ok: true, assistant: "Tracy", authRequired: authEnabled() }));
+
+// GET /diag?userId=<your Tracy userId>
+// One-shot admin wiring check. Open it in a browser to see, in plain yes/no,
+// exactly which layer is (or isn't) connecting BabyResell — without exposing
+// any secret or any business number. Steps it verifies, in order:
+//   1. adminUserIdsSet   — is ADMIN_USER_IDS configured at all?
+//   2. userIdIsAdmin     — does the userId you pass match that allowlist?
+//   3. babyresell.*      — is BABYRESELL_API_URL + a credential present?
+//   4. livePing          — can Tracy actually reach BabyResell with the key?
+// If userIdIsAdmin is false, the live ping is skipped (same default-deny as the
+// real tools) so this can't be used to probe your stats.
+app.get("/diag", async (req, res) => {
+  const allow = getAdminIds();
+  const userId = String(req.query.userId || "").trim();
+  const userIdIsAdmin = allow.length > 0 && userId !== "" && allow.includes(userId);
+
+  const br = babyresellDiag();
+  const out = {
+    adminSurfaceAvailable: true,
+    adminUserIdsSet: allow.length > 0,
+    adminUserIdsCount: allow.length,
+    youPassedUserId: userId || null,
+    userIdIsAdmin,
+    babyresell: br,
+  };
+
+  // Only ping live if the caller proved they're an allow-listed admin AND the
+  // connection is configured — mirrors the tool's own gate.
+  if (userIdIsAdmin && br.configured) {
+    out.livePing = await pingStats();
+  } else if (!br.configured) {
+    out.livePing = { ok: false, reason: "babyresell-not-configured (set BABYRESELL_API_URL + a credential)" };
+  } else {
+    out.livePing = { ok: false, reason: "skipped (pass ?userId=<an ADMIN_USER_IDS value> to run the live check)" };
+  }
+
+  res.json(out);
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Tracy is listening on :${PORT}`));
