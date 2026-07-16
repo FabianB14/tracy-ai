@@ -151,22 +151,23 @@ export function isDue(sub, now = null) {
 // Returns [{ userId, email, apps }]. Never throws.
 export async function listDigestSubscribers() {
   try {
+    // Email is optional now — a user may receive the digest by push instead.
     if (dbEnabled()) {
       await ensureSchema();
       const { rows } = await query(
         `SELECT user_id, email, apps, time, tz, last_sent FROM subscriptions
-         WHERE digest = true AND email <> '' AND jsonb_array_length(apps) > 0`
+         WHERE digest = true AND jsonb_array_length(apps) > 0`
       );
       return rows.map((r) => ({
-        userId: r.user_id, email: r.email, apps: Array.isArray(r.apps) ? r.apps : [],
+        userId: r.user_id, email: r.email || "", apps: Array.isArray(r.apps) ? r.apps : [],
         time: r.time || "08:00", tz: r.tz || DEFAULT_TZ, last_sent: r.last_sent || null,
       }));
     }
     const store = readFileStore();
     return Object.entries(store)
-      .filter(([, s]) => s && s.digest && s.email && Array.isArray(s.apps) && s.apps.length)
+      .filter(([, s]) => s && s.digest && Array.isArray(s.apps) && s.apps.length)
       .map(([userId, s]) => ({
-        userId, email: s.email, apps: s.apps,
+        userId, email: s.email || "", apps: s.apps,
         time: s.time || "08:00", tz: s.tz || DEFAULT_TZ, last_sent: s.last_sent || null,
       }));
   } catch (err) {

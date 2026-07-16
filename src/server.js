@@ -23,6 +23,7 @@ import { getAdminIds } from "./tools.js";
 import { getSubscription, setSubscription, listDigestSubscribers, markSent, localNow, isDue } from "./subscriptions.js";
 import { buildDigest, knownApps, APPS } from "./digest.js";
 import { sendEmail, emailConfigured } from "./email.js";
+import { pushConfigured, getPublicKey, savePushSub, removePushSub, sendPushToUser } from "./push.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -262,16 +263,47 @@ app.post("/subscription/test", requireAuth, async (req, res) => {
   }
 });
 
+// --- Push notifications (to the installed app on a phone/desktop) ---
+
+// GET /push/config — public VAPID key + whether push is set up on the server.
+app.get("/push/config", (_req, res) => res.json({ configured: pushConfigured(), publicKey: getPublicKey() }));
+
+// POST /push/subscribe — save this device's push subscription for a user.
+app.post("/push/subscribe", requireAuth, async (req, res) => {
+  const { userId, subscription } = req.body || {};
+  if (!userId || !subscription || !subscription.endpoint) return res.status(400).json({ error: "userId + subscription required" });
+  const ok = await savePushSub(userId, subscription);
+  res.json({ ok });
+});
+
+// POST /push/unsubscribe — forget a device (by its endpoint).
+app.post("/push/unsubscribe", requireAuth, async (req, res) => {
+  const endpoint = (req.body && req.body.endpoint) || "";
+  if (!endpoint) return res.status(400).json({ error: "endpoint required" });
+  await removePushSub(endpoint);
+  res.json({ ok: true });
+});
+
+// POST /push/test — send a test push to the current user's devices now.
+app.post("/push/test", requireAuth, async (req, res) => {
+  const userId = String((req.body && req.body.userId) || "").trim();
+  if (!userId) return res.status(400).json({ error: "userId required" });
+  if (!pushConfigured()) return res.status(400).json({ error: "Push isn't set up on the server yet (VAPID keys)." });
+  const sent = await sendPushToUser(userId, { title: "Tracy", body: "Push notifications are working 🎉", url: "/" });
+  res.json(sent ? { ok: true, sent } : { error: "No registered devices for this user (enable notifications on a device first)." });
+});
+
 // POST /tasks/daily — send digests to everyone whose local send-time has passed
 // today and who hasn't been sent yet. Run this FREQUENTLY (e.g. hourly): each
-// user is emailed once per day, at/after their chosen time in their timezone.
-// Protect with a shared secret so only your scheduler can trigger it:
+// user is delivered once per day, at/after their chosen time in their timezone.
+// Delivers by EMAIL (if they set one) and/or PUSH (if they enabled it on a
+// device). Protect with a shared secret so only your scheduler can trigger it:
 //   header  X-Tasks-Secret: <TASKS_SECRET>   (or ?secret=... query param)
 app.post("/tasks/daily", async (req, res) => {
   const secret = process.env.TASKS_SECRET || "";
   const given = req.get("X-Tasks-Secret") || req.query.secret || "";
   if (!secret || given !== secret) return res.status(403).json({ error: "forbidden" });
-  if (!emailConfigured()) return res.json({ ok: false, note: "email-not-configured" });
+  if (!emailConfigured() && !pushConfigured()) return res.json({ ok: false, note: "no-delivery-channel (set EMAIL_* and/or VAPID_*)" });
 
   const subs = await listDigestSubscribers();
   const results = [];
@@ -279,15 +311,25 @@ app.post("/tasks/daily", async (req, res) => {
     const now = localNow(s.tz);
     if (!isDue(s, now)) continue; // not yet their time today, or already sent
     try {
-      const { subject, text, html } = await buildDigest(s.apps);
-      const r = await sendEmail({ to: s.email, subject, text, html });
-      if (r.ok) { await markSent(s.userId, now.date); results.push({ userId: s.userId, to: s.email, sent: true }); }
-      else results.push({ userId: s.userId, to: s.email, error: r.error });
+      const { subject, text, html, summary } = await buildDigest(s.apps);
+      let delivered = false;
+      const out = { userId: s.userId };
+      if (s.email && emailConfigured()) {
+        const r = await sendEmail({ to: s.email, subject, text, html });
+        if (r.ok) { delivered = true; out.email = true; } else out.emailError = r.error;
+      }
+      if (pushConfigured()) {
+        const n = await sendPushToUser(s.userId, { title: subject, body: summary, url: "/" });
+        if (n > 0) { delivered = true; out.push = n; }
+      }
+      if (delivered) await markSent(s.userId, now.date);
+      out.delivered = delivered;
+      results.push(out);
     } catch (err) {
-      results.push({ userId: s.userId, to: s.email, error: err.message });
+      results.push({ userId: s.userId, error: err.message });
     }
   }
-  res.json({ ok: true, considered: subs.length, sent: results.filter((r) => r.sent).length, results });
+  res.json({ ok: true, considered: subs.length, delivered: results.filter((r) => r.delivered).length, results });
 });
 
 const PORT = process.env.PORT || 3000;

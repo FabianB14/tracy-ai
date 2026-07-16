@@ -260,6 +260,8 @@ body::before {
   color: var(--text-dim); font-size: 15px; line-height: 1; padding: 6px 4px;
 }
 @media (prefers-reduced-motion: reduce) { .install-bar { transition: none; } }
+.install-row { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
+.install-row .install-text { flex: 1 1 auto; }
 .cfg-section { margin: 10px 0 2px; font-size: 12px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: var(--cyan-dim); border-top: 1px solid var(--glass-brd); padding-top: 12px; }
 .cfg-apps { display: flex; flex-direction: column; gap: 6px; margin: 2px 0; }
 #cfg-notify-status { display: block; margin-top: 6px; }
