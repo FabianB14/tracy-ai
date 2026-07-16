@@ -591,6 +591,7 @@
     loadNotifySettings();
     updateInstallRow();
     updatePushRow();
+    loadKbStats();
     modal.hidden = false;
   }
   function populateVoicePicker() {
@@ -683,6 +684,20 @@
       const data = await res.json().catch(() => ({}));
       notifyStatus(res.ok ? `Test sent to ${data.to || "your email"} — check your inbox (and spam).` : (data.error || "Couldn't send."), res.ok);
     } catch { notifyStatus("Couldn't reach the server.", false); }
+  }
+
+  // ---- Tracy's learning (self-sufficiency readout) ----
+  async function loadKbStats() {
+    const el = $("cfg-kb-stats"); if (!el) return;
+    el.textContent = "…";
+    try {
+      const s = await fetch(api() + "/kb/stats").then((r) => r.json());
+      if (!s.enabled) { el.textContent = "Off — add a Gemini key to let Tracy build her own knowledge."; return; }
+      const a = s.allTime || {}, w = s.last7Days || {};
+      if (!a.total) { el.textContent = "No data yet — as Tracy answers, she'll start reusing her own knowledge."; return; }
+      el.textContent = `She answered ${a.selfSufficientPct}% from her own knowledge (${a.fromKnowledge} of ${a.total} all-time` +
+        (w.total ? `; ${w.selfSufficientPct}% this week` : "") + ").";
+    } catch { el.textContent = "—"; }
   }
 
   // ---- Install (backup entry point in Settings) ----

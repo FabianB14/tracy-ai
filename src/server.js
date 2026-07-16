@@ -25,6 +25,8 @@ import { buildDigest, knownApps, APPS } from "./digest.js";
 import { sendEmail, emailConfigured } from "./email.js";
 import { pushConfigured, getPublicKey, savePushSub, removePushSub, sendPushToUser } from "./push.js";
 import { kbEnabled, kbSearch, kbAdd, formatKnowledgeBlock } from "./knowledge.js";
+import { geminiConfigured, geminiChat } from "./gemini.js";
+import { logAnswer, getAnswerStats } from "./answerlog.js";
 
 // Tools whose answers are LIVE/time-sensitive — never cache these as knowledge.
 const DYNAMIC_TOOLS = new Set([
@@ -108,17 +110,40 @@ app.post("/chat", requireAuth, async (req, res) => {
 
     // Knowledge base: retrieve what Tracy has already learned that's relevant to
     // this question, and give it to her as context (RAG). Best-effort.
+    let kbHits = [];
     if (kbEnabled() && lastText) {
       try {
-        const kbBlock = formatKnowledgeBlock(await kbSearch(lastText, { userId }));
+        kbHits = await kbSearch(lastText, { userId });
+        const kbBlock = formatKnowledgeBlock(kbHits);
         if (kbBlock) systemPrompt += "\n\n---\n\n" + kbBlock;
       } catch (err) {
         console.error("kb search failed:", err.message);
       }
     }
 
-    const convo = [...messages];
     const toolsUsed = [];
+    let text = null;
+    let answerPath = "model";
+
+    // Confidence gate: if Tracy clearly already knows this, answer from her own
+    // knowledge instead of calling Claude. A very strong match reuses the saved
+    // answer verbatim (no model call at all); a strong match uses the cheap
+    // model grounded in that knowledge; otherwise it falls through to the full
+    // Claude path below. Thresholds are tunable via env.
+    const topScore = kbHits.length ? kbHits[0].score : 0;
+    const DIRECT_T = Number(process.env.KB_DIRECT_THRESHOLD || 0.95);
+    const CHEAP_T = Number(process.env.KB_ANSWER_THRESHOLD || 0.88);
+    if (kbEnabled() && topScore >= DIRECT_T) {
+      text = kbHits[0].content;
+      answerPath = "kb-direct";
+    } else if (kbEnabled() && topScore >= CHEAP_T && geminiConfigured()) {
+      const g = await geminiChat(systemPrompt, lastText);
+      if (g) { text = g; answerPath = "kb-gemini"; }
+    }
+
+    // Full Claude path (with tools) — only when the gate didn't answer.
+    if (text === null) {
+    const convo = [...messages];
     let response;
 
     // Tool-use loop: keep going until Tracy answers in plain text.
@@ -171,10 +196,12 @@ app.post("/chat", requireAuth, async (req, res) => {
       convo.push({ role: "user", content: toolResults });
     }
 
-    const text = response.content
-      .filter((b) => b.type === "text")
-      .map((b) => b.text)
-      .join("\n");
+      text = response.content
+        .filter((b) => b.type === "text")
+        .map((b) => b.text)
+        .join("\n");
+      answerPath = "model";
+    }
 
     // Log the exchange (see src/logging.js — needs user-consent language in the
     // apps before production).
@@ -186,13 +213,18 @@ app.post("/chat", requireAuth, async (req, res) => {
       toolsUsed,
     });
 
-    res.json({ reply: text, surface: resolved.id, toolsUsed });
+    res.json({ reply: text, surface: resolved.id, toolsUsed, path: answerPath });
+
+    // Self-sufficiency log: record how this answer was produced (aggregate only).
+    logAnswer({ userId, surface: resolved.id, path: answerPath, score: topScore });
 
     // Learn: save this answer to the knowledge base so Tracy can reuse it — but
-    // ONLY for general answers. Skip anything backed by a live/dynamic tool
-    // (stats, web search, etc.), errors, and trivially short replies. Fire-and-
+    // ONLY for fresh general answers from the model path. Skip anything backed by
+    // a live/dynamic tool (stats, web search, etc.), errors, trivially short
+    // replies, and answers that already came FROM the knowledge base. Fire-and-
     // forget so it never delays the response.
-    if (kbEnabled() && lastText && text && text.length >= 40 && !toolsUsed.some((t) => DYNAMIC_TOOLS.has(t))) {
+    if (answerPath === "model" && kbEnabled() && lastText && text && text.length >= 40 &&
+        !toolsUsed.some((t) => DYNAMIC_TOOLS.has(t))) {
       kbAdd({ scope: userId || "global", kind: "qa", question: lastText, content: text }).catch(() => {});
     }
   } catch (err) {
@@ -208,6 +240,12 @@ app.post("/chat", requireAuth, async (req, res) => {
 });
 
 app.get("/health", (_req, res) => res.json({ ok: true, assistant: "Tracy", authRequired: authEnabled() }));
+
+// GET /kb/stats — how often Tracy answers from her own knowledge vs. asking
+// Claude (aggregate counts only; no message content).
+app.get("/kb/stats", async (_req, res) => {
+  res.json({ enabled: kbEnabled(), ...(await getAnswerStats()) });
+});
 
 // GET /diag?userId=<your Tracy userId>
 // One-shot admin wiring check. Open it in a browser to see, in plain yes/no,

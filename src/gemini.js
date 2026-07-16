@@ -71,6 +71,26 @@ export async function webResearch(query) {
   }
 }
 
+// Plain chat completion via Gemini (the cheap model) — used by the knowledge
+// confidence gate to answer a well-known question without calling Claude.
+export async function geminiChat(system, user) {
+  try {
+    const ai = await getClient();
+    const res = await withTimeout(
+      ai.models.generateContent({
+        model: MODEL,
+        contents: String(user || ""),
+        config: { systemInstruction: String(system || "") },
+      }),
+      20000,
+    );
+    return extractText(res) || null;
+  } catch (err) {
+    console.error("geminiChat failed:", err.message);
+    return null;
+  }
+}
+
 // Analyze a media URL with Gemini. Best with YouTube links (and other public
 // video/audio URLs Gemini can fetch by URI). Returns a written analysis.
 export async function analyzeMedia(url, question) {
