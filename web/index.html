@@ -127,6 +127,24 @@
           placeholder="heard = meant (one per line)&#10;e.g. chico = Chicco"></textarea>
         <small class="hint">Tracy also learns these automatically when you fix a transcript before sending.</small>
       </label>
+
+      <div class="cfg-section">Daily check-ins</div>
+      <label>Email for check-ins
+        <input id="cfg-notify-email" type="email" autocomplete="email" spellcheck="false"
+          placeholder="you@example.com" />
+        <small class="hint">Where Tracy emails your daily summary. Requires email to be set up on the server.</small>
+      </label>
+      <div id="cfg-apps" class="cfg-apps"></div>
+      <label class="row">
+        <span>Email me a daily check-in</span>
+        <input id="cfg-digest" type="checkbox" />
+      </label>
+      <div class="modal-actions" style="justify-content:flex-start;gap:8px">
+        <button id="cfg-notify-save" class="ghost-btn" type="button">Save check-ins</button>
+        <button id="cfg-notify-test" class="ghost-btn" type="button">Send test now</button>
+      </div>
+      <small id="cfg-notify-status" class="hint"></small>
+
       <div class="modal-actions">
         <button id="cfg-clear" class="ghost-btn">Clear chat</button>
         <button id="cfg-save" class="primary-btn">Done</button>

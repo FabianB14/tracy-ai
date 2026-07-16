@@ -39,6 +39,7 @@
 
   // ---- Auth (access-key gate) ----
   const api = () => settings.backendUrl.replace(/\/$/, "");
+  const browserTz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { return ""; } };
   const getToken = () => store.get("token", null);
   const setToken = (t) => store.set("token", t);
   const clearToken = () => { try { localStorage.removeItem("tracy.token"); } catch {} };
@@ -206,7 +207,7 @@
       const res = await fetch(api() + "/chat", {
         method: "POST",
         headers,
-        body: JSON.stringify({ surface: settings.surface, userId: settings.userId, messages }),
+        body: JSON.stringify({ surface: settings.surface, userId: settings.userId, messages, tz: browserTz() }),
       });
       thinking.remove();
 
@@ -556,6 +557,7 @@
     $("cfg-silence").value = settings.silenceMs / 1000; $("cfg-silence-val").textContent = (settings.silenceMs / 1000).toFixed(1) + "s";
     if (Corrections) $("cfg-corrections").value = formatCorrections(Corrections.list());
     populateVoicePicker();
+    loadNotifySettings();
     modal.hidden = false;
   }
   function populateVoicePicker() {
@@ -598,6 +600,58 @@
     pingHealth();
   }
 
+  // ---- Notifications (daily check-in) ----
+  function authHeaders(json) {
+    const h = json ? { "Content-Type": "application/json" } : {};
+    const tok = getToken(); if (tok) h.Authorization = "Bearer " + tok;
+    return h;
+  }
+  function notifyStatus(msg, ok) {
+    const el = $("cfg-notify-status"); if (!el) return;
+    el.textContent = msg || ""; el.style.color = ok === false ? "#ff9a9a" : "";
+  }
+  async function loadNotifySettings() {
+    const box = $("cfg-apps"); if (box) box.innerHTML = "";
+    notifyStatus("");
+    try {
+      const res = await fetch(api() + "/subscription?userId=" + encodeURIComponent(settings.userId), { headers: authHeaders(false) });
+      if (!res.ok) return;
+      const data = await res.json();
+      const sub = data.subscription || { email: "", apps: [], digest: false };
+      $("cfg-notify-email").value = sub.email || "";
+      $("cfg-digest").checked = !!sub.digest;
+      (data.apps || []).forEach((a) => {
+        const wrap = document.createElement("label"); wrap.className = "row";
+        const span = document.createElement("span"); span.textContent = a.label;
+        const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = a.key;
+        cb.checked = (sub.apps || []).includes(a.key);
+        wrap.appendChild(span); wrap.appendChild(cb); box.appendChild(wrap);
+      });
+      if (data.emailReady === false) notifyStatus("Email isn't set up on the server yet — check-ins won't send until it is.", false);
+    } catch { /* ignore */ }
+  }
+  function selectedApps() {
+    return [...document.querySelectorAll("#cfg-apps input[type=checkbox]")].filter((c) => c.checked).map((c) => c.value);
+  }
+  async function saveNotify() {
+    notifyStatus("Saving…");
+    try {
+      const body = { userId: settings.userId, email: $("cfg-notify-email").value.trim(), apps: selectedApps(), digest: $("cfg-digest").checked, tz: browserTz() };
+      const res = await fetch(api() + "/subscription", { method: "POST", headers: authHeaders(true), body: JSON.stringify(body) });
+      notifyStatus(res.ok ? "Saved." : "Couldn't save.", res.ok);
+      return res.ok;
+    } catch { notifyStatus("Couldn't reach the server.", false); return false; }
+  }
+  async function testNotify() {
+    notifyStatus("Sending test…");
+    if (!(await saveNotify())) return;
+    try {
+      const res = await fetch(api() + "/subscription/test", { method: "POST", headers: authHeaders(true), body: JSON.stringify({ userId: settings.userId }) });
+      const data = await res.json().catch(() => ({}));
+      notifyStatus(res.ok ? `Test sent to ${data.to || "your email"} — check your inbox (and spam).` : (data.error || "Couldn't send."), res.ok);
+    } catch { notifyStatus("Couldn't reach the server.", false); }
+  }
+
   // ---- Wire up ----
   elSurface.value = settings.surface;
   elSurface.addEventListener("change", () => { settings.surface = elSurface.value; store.set("surface", settings.surface); });
@@ -608,6 +662,8 @@
   elHF.addEventListener("click", () => setHandsFree(!handsFree));
   $("settings-btn").addEventListener("click", openSettings);
   $("cfg-save").addEventListener("click", saveSettings);
+  $("cfg-notify-save").addEventListener("click", saveNotify);
+  $("cfg-notify-test").addEventListener("click", testNotify);
   $("cfg-rate").addEventListener("input", (e) => { $("cfg-rate-val").textContent = (+e.target.value).toFixed(2); });
   $("cfg-pitch").addEventListener("input", (e) => { $("cfg-pitch-val").textContent = (+e.target.value).toFixed(2); });
   $("cfg-silence").addEventListener("input", (e) => { $("cfg-silence-val").textContent = (+e.target.value).toFixed(1) + "s"; });
