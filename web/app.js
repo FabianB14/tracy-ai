@@ -39,6 +39,7 @@
 
   // ---- Auth (access-key gate) ----
   const api = () => settings.backendUrl.replace(/\/$/, "");
+  const browserTz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { return ""; } };
   const getToken = () => store.get("token", null);
   const setToken = (t) => store.set("token", t);
   const clearToken = () => { try { localStorage.removeItem("tracy.token"); } catch {} };
@@ -206,7 +207,7 @@
       const res = await fetch(api() + "/chat", {
         method: "POST",
         headers,
-        body: JSON.stringify({ surface: settings.surface, userId: settings.userId, messages }),
+        body: JSON.stringify({ surface: settings.surface, userId: settings.userId, messages, tz: browserTz() }),
       });
       thinking.remove();
 
@@ -635,7 +636,7 @@
   async function saveNotify() {
     notifyStatus("Saving…");
     try {
-      const body = { userId: settings.userId, email: $("cfg-notify-email").value.trim(), apps: selectedApps(), digest: $("cfg-digest").checked };
+      const body = { userId: settings.userId, email: $("cfg-notify-email").value.trim(), apps: selectedApps(), digest: $("cfg-digest").checked, tz: browserTz() };
       const res = await fetch(api() + "/subscription", { method: "POST", headers: authHeaders(true), body: JSON.stringify(body) });
       notifyStatus(res.ok ? "Saved." : "Couldn't save.", res.ok);
       return res.ok;

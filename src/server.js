@@ -20,7 +20,7 @@ import { getMemories, formatMemoryBlock } from "./memory.js";
 import { authEnabled, requireAuth, handleAuth } from "./auth.js";
 import { babyresellDiag, pingStats } from "./babyresell.js";
 import { getAdminIds } from "./tools.js";
-import { getSubscription, setSubscription, listDigestSubscribers } from "./subscriptions.js";
+import { getSubscription, setSubscription, listDigestSubscribers, markSent, localNow, isDue } from "./subscriptions.js";
 import { buildDigest, knownApps, APPS } from "./digest.js";
 import { sendEmail, emailConfigured } from "./email.js";
 
@@ -63,7 +63,7 @@ app.post("/auth", handleAuth);
 // requireAuth is a no-op unless AUTH_SECRET is configured.
 app.post("/chat", requireAuth, async (req, res) => {
   try {
-    const { messages, surface, userId } = req.body;
+    const { messages, surface, userId, tz } = req.body;
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: "messages array required" });
     }
@@ -77,7 +77,7 @@ app.post("/chat", requireAuth, async (req, res) => {
 
     // Resolve where Tracy is: core identity + surface prompt + this surface's tools.
     const resolved = resolveSurface(surface);
-    const toolkit = buildToolkit(resolved.toolSets, { userId, surface: resolved.id });
+    const toolkit = buildToolkit(resolved.toolSets, { userId, surface: resolved.id, tz });
 
     // Per-user memory: load what Tracy remembers about this user and inject it
     // into her system prompt so she recalls them across sessions. Best-effort —
@@ -230,9 +230,17 @@ app.get("/subscription", requireAuth, async (req, res) => {
 
 // POST /subscription — save a user's digest prefs. Body: {userId, email, apps[], digest}.
 app.post("/subscription", requireAuth, async (req, res) => {
-  const { userId, email, apps, digest } = req.body || {};
+  const { userId, email, apps, digest, time, tz } = req.body || {};
   if (!userId) return res.status(400).json({ error: "userId required" });
-  const ok = await setSubscription(userId, { email, apps, digest });
+  // Merge with existing so omitted fields (e.g. a time set via chat) are kept.
+  const cur = (await getSubscription(userId)) || {};
+  const ok = await setSubscription(userId, {
+    email: email !== undefined ? email : cur.email,
+    apps: apps !== undefined ? apps : cur.apps,
+    digest: digest !== undefined ? digest : cur.digest,
+    time: time !== undefined ? time : cur.time,
+    tz: tz !== undefined ? tz : cur.tz,
+  });
   res.json({ ok });
 });
 
@@ -254,8 +262,10 @@ app.post("/subscription/test", requireAuth, async (req, res) => {
   }
 });
 
-// POST /tasks/daily — run the daily digest for every subscriber. Protect with a
-// shared secret so only your Render Cron Job can trigger it:
+// POST /tasks/daily — send digests to everyone whose local send-time has passed
+// today and who hasn't been sent yet. Run this FREQUENTLY (e.g. hourly): each
+// user is emailed once per day, at/after their chosen time in their timezone.
+// Protect with a shared secret so only your scheduler can trigger it:
 //   header  X-Tasks-Secret: <TASKS_SECRET>   (or ?secret=... query param)
 app.post("/tasks/daily", async (req, res) => {
   const secret = process.env.TASKS_SECRET || "";
@@ -266,15 +276,18 @@ app.post("/tasks/daily", async (req, res) => {
   const subs = await listDigestSubscribers();
   const results = [];
   for (const s of subs) {
+    const now = localNow(s.tz);
+    if (!isDue(s, now)) continue; // not yet their time today, or already sent
     try {
       const { subject, text, html } = await buildDigest(s.apps);
       const r = await sendEmail({ to: s.email, subject, text, html });
-      results.push({ userId: s.userId, to: s.email, ...(r.ok ? { sent: true } : { error: r.error }) });
+      if (r.ok) { await markSent(s.userId, now.date); results.push({ userId: s.userId, to: s.email, sent: true }); }
+      else results.push({ userId: s.userId, to: s.email, error: r.error });
     } catch (err) {
       results.push({ userId: s.userId, to: s.email, error: err.message });
     }
   }
-  res.json({ ok: true, count: subs.length, sent: results.filter((r) => r.sent).length, results });
+  res.json({ ok: true, considered: subs.length, sent: results.filter((r) => r.sent).length, results });
 });
 
 const PORT = process.env.PORT || 3000;

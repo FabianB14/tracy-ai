@@ -28,6 +28,9 @@ function ensureSchema() {
         digest     BOOLEAN NOT NULL DEFAULT false,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
+      ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS time      TEXT NOT NULL DEFAULT '08:00';
+      ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS tz        TEXT NOT NULL DEFAULT 'America/New_York';
+      ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS last_sent TEXT;
     `).catch((err) => { schemaReady = null; throw err; });
   }
   return schemaReady;
@@ -43,12 +46,17 @@ function writeFileStore(store) {
   writeFileSync(FILE, JSON.stringify(store, null, 2));
 }
 
+const DEFAULT_TZ = process.env.DEFAULT_TZ || "America/New_York";
+
 function normalize(row) {
   if (!row) return null;
   return {
     email: row.email || "",
     apps: Array.isArray(row.apps) ? row.apps : [],
     digest: Boolean(row.digest),
+    time: row.time || "08:00",
+    tz: row.tz || DEFAULT_TZ,
+    last_sent: row.last_sent || null,
   };
 }
 
@@ -69,27 +77,30 @@ export async function getSubscription(userId) {
 }
 
 // Create/replace a user's subscription. Best-effort; returns true on success.
-export async function setSubscription(userId, { email, apps, digest }) {
+export async function setSubscription(userId, { email, apps, digest, time, tz }) {
   if (!userId) return false;
   const clean = {
     email: String(email || "").trim(),
     apps: Array.isArray(apps) ? apps.map(String) : [],
     digest: Boolean(digest),
+    time: String(time || "08:00").trim(),
+    tz: String(tz || DEFAULT_TZ).trim(),
   };
   try {
     if (dbEnabled()) {
       await ensureSchema();
+      // Changing prefs clears last_sent so a new/edited schedule can fire today.
       await query(
-        `INSERT INTO subscriptions (user_id, email, apps, digest, updated_at)
-         VALUES ($1, $2, $3, $4, now())
+        `INSERT INTO subscriptions (user_id, email, apps, digest, time, tz, last_sent, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NULL, now())
          ON CONFLICT (user_id) DO UPDATE
-           SET email = EXCLUDED.email, apps = EXCLUDED.apps,
-               digest = EXCLUDED.digest, updated_at = now()`,
-        [userId, clean.email, JSON.stringify(clean.apps), clean.digest]
+           SET email = EXCLUDED.email, apps = EXCLUDED.apps, digest = EXCLUDED.digest,
+               time = EXCLUDED.time, tz = EXCLUDED.tz, last_sent = NULL, updated_at = now()`,
+        [userId, clean.email, JSON.stringify(clean.apps), clean.digest, clean.time, clean.tz]
       );
     } else {
       const store = readFileStore();
-      store[userId] = clean;
+      store[userId] = { ...clean, last_sent: null };
       writeFileStore(store);
     }
     return true;
@@ -99,6 +110,43 @@ export async function setSubscription(userId, { email, apps, digest }) {
   }
 }
 
+// Record that a user's digest was sent for a given local date (dedupe per day).
+export async function markSent(userId, localDate) {
+  try {
+    if (dbEnabled()) {
+      await ensureSchema();
+      await query("UPDATE subscriptions SET last_sent = $2 WHERE user_id = $1", [userId, localDate]);
+    } else {
+      const store = readFileStore();
+      if (store[userId]) { store[userId].last_sent = localDate; writeFileStore(store); }
+    }
+  } catch (err) {
+    console.error("markSent failed:", err.message);
+  }
+}
+
+// Current local date + HH:MM in a timezone (falls back to UTC on a bad tz).
+export function localNow(tz) {
+  try {
+    const fmt = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz || DEFAULT_TZ, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hour12: false,
+    });
+    const p = Object.fromEntries(fmt.formatToParts(new Date()).map((x) => [x.type, x.value]));
+    const hh = p.hour === "24" ? "00" : p.hour; // some environments emit "24" at midnight
+    return { date: `${p.year}-${p.month}-${p.day}`, hhmm: `${hh}:${p.minute}` };
+  } catch {
+    const iso = new Date().toISOString();
+    return { date: iso.slice(0, 10), hhmm: iso.slice(11, 16) };
+  }
+}
+
+// Due if we've reached the user's local send time today and haven't sent yet.
+export function isDue(sub, now = null) {
+  const t = now || localNow(sub.tz);
+  return t.hhmm >= (sub.time || "08:00") && sub.last_sent !== t.date;
+}
+
 // Everyone due a daily digest: digest enabled, an email set, and ≥1 app.
 // Returns [{ userId, email, apps }]. Never throws.
 export async function listDigestSubscribers() {
@@ -106,15 +154,21 @@ export async function listDigestSubscribers() {
     if (dbEnabled()) {
       await ensureSchema();
       const { rows } = await query(
-        `SELECT user_id, email, apps FROM subscriptions
+        `SELECT user_id, email, apps, time, tz, last_sent FROM subscriptions
          WHERE digest = true AND email <> '' AND jsonb_array_length(apps) > 0`
       );
-      return rows.map((r) => ({ userId: r.user_id, email: r.email, apps: Array.isArray(r.apps) ? r.apps : [] }));
+      return rows.map((r) => ({
+        userId: r.user_id, email: r.email, apps: Array.isArray(r.apps) ? r.apps : [],
+        time: r.time || "08:00", tz: r.tz || DEFAULT_TZ, last_sent: r.last_sent || null,
+      }));
     }
     const store = readFileStore();
     return Object.entries(store)
       .filter(([, s]) => s && s.digest && s.email && Array.isArray(s.apps) && s.apps.length)
-      .map(([userId, s]) => ({ userId, email: s.email, apps: s.apps }));
+      .map(([userId, s]) => ({
+        userId, email: s.email, apps: s.apps,
+        time: s.time || "08:00", tz: s.tz || DEFAULT_TZ, last_sent: s.last_sent || null,
+      }));
   } catch (err) {
     console.error("listDigestSubscribers failed:", err.message);
     return [];

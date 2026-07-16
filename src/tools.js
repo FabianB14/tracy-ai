@@ -14,6 +14,8 @@
 import { addMemory } from "./memory.js";
 import { babyresellConfigured, getStats, getActivity, getReportStats, getOpenReports, getShippingBacklog } from "./babyresell.js";
 import { geminiConfigured, webResearch, analyzeMedia } from "./gemini.js";
+import { getSubscription, setSubscription } from "./subscriptions.js";
+import { knownApps } from "./digest.js";
 
 // ---------------------------------------------------------------------------
 // Core tool set — available on every surface
@@ -50,6 +52,128 @@ const coreHandlers = {
     return ok ? { status: "remembered", fact } : { status: "not_saved", reason: "storage error" };
   },
 };
+
+// ---------------------------------------------------------------------------
+// Notifications — let the user manage daily check-ins conversationally
+// ---------------------------------------------------------------------------
+// Available on every surface (folded into core below). Tracy can set up, list,
+// and cancel a user's daily email digest straight from chat.
+
+const pad = (n) => String(n).padStart(2, "0");
+function parseTime(str) {
+  const s = String(str).trim().toLowerCase();
+  let m;
+  if ((m = s.match(/^(\d{1,2}):(\d{2})\s*(am|pm)?$/))) {
+    let h = +m[1]; const min = +m[2];
+    if (m[3] === "pm" && h < 12) h += 12; if (m[3] === "am" && h === 12) h = 0;
+    return h > 23 || min > 59 ? null : `${pad(h)}:${pad(min)}`;
+  }
+  if ((m = s.match(/^(\d{1,2})\s*(am|pm)$/))) {
+    let h = +m[1]; if (m[2] === "pm" && h < 12) h += 12; if (m[2] === "am" && h === 12) h = 0;
+    return h > 23 ? null : `${pad(h)}:00`;
+  }
+  if ((m = s.match(/^(\d{1,2})$/))) { const h = +m[1]; return h > 23 ? null : `${pad(h)}:00`; }
+  if ((m = s.match(/^(\d{1,2})(\d{2})$/))) { const h = +m[1], min = +m[2]; return h > 23 || min > 59 ? null : `${pad(h)}:${pad(min)}`; }
+  if (s === "noon") return "12:00"; if (s === "midnight") return "00:00";
+  if (s === "morning") return "08:00"; if (s === "evening") return "18:00";
+  return null;
+}
+function prettyTime(hhmm) {
+  const [h, m] = String(hhmm).split(":").map(Number);
+  const ap = h < 12 ? "am" : "pm"; let hh = h % 12; if (hh === 0) hh = 12;
+  return m ? `${hh}:${pad(m)} ${ap}` : `${hh} ${ap}`;
+}
+const normApp = (x) => String(x).toLowerCase().replace(/[^a-z]/g, "");
+function resolveApps(list) {
+  const known = knownApps(); const apps = [], unknown = [];
+  for (const item of list || []) {
+    const n = normApp(item);
+    const hit = known.find((a) => normApp(a.key) === n || normApp(a.label) === n || n.includes(normApp(a.key)) || normApp(a.key).includes(n));
+    if (hit) { if (!apps.includes(hit.key)) apps.push(hit.key); } else unknown.push(item);
+  }
+  return { apps, unknown };
+}
+const appLabel = (key) => (knownApps().find((a) => a.key === key) || { label: key }).label;
+
+const notifySchemas = [
+  {
+    name: "schedule_checkin",
+    description:
+      "Set up or update a recurring daily EMAIL check-in for the current user about one or more " +
+      "Interverse apps. Use whenever they ask you to email/notify/send them a summary or updates on a " +
+      "schedule (e.g. 'email me BabyResell numbers every morning at 8'). After it saves, tell them " +
+      "plainly what you set (which app, what time) and that they can change or cancel it anytime.",
+    input_schema: {
+      type: "object",
+      properties: {
+        apps: { type: "array", items: { type: "string" }, description: "Apps to include, e.g. ['babyresell']. Omit to keep their current set (or all apps if none yet)." },
+        time: { type: "string", description: "Local time of day to send, e.g. '8am', '08:00', '6:30pm'. Omit to keep current." },
+        email: { type: "string", description: "Where to send it. Omit if one is already on file." },
+        timezone: { type: "string", description: "IANA timezone like 'America/New_York'. Omit to use the user's detected timezone." },
+      },
+    },
+  },
+  {
+    name: "list_checkins",
+    description: "Show the current user's daily check-in settings (apps, time, email). Use when they ask what they're subscribed to or what's set up.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "cancel_checkin",
+    description: "Turn off the current user's daily check-in. Use when they ask to stop, remove, cancel, or unsubscribe from the daily email.",
+    input_schema: { type: "object", properties: {} },
+  },
+];
+
+const notifyHandlers = {
+  async schedule_checkin({ apps, time, email, timezone } = {}, context = {}) {
+    if (!context.userId) return { error: "There's no user id on this session, so I can't save a schedule." };
+    const existing = (await getSubscription(context.userId)) || { email: "", apps: [], time: "08:00", tz: null };
+
+    let useApps;
+    if (Array.isArray(apps) && apps.length) {
+      const r = resolveApps(apps);
+      if (!r.apps.length) return { status: "needs_info", reason: `I don't cover those. I can send: ${knownApps().map((a) => a.label).join(", ")}.` };
+      useApps = r.apps;
+    } else {
+      useApps = existing.apps && existing.apps.length ? existing.apps : knownApps().map((a) => a.key);
+    }
+
+    let useTime = existing.time || "08:00";
+    if (time) { const t = parseTime(time); if (!t) return { status: "needs_info", reason: `I couldn't read the time "${time}". Try something like "8am" or "18:30".` }; useTime = t; }
+
+    const useEmail = (email && String(email).trim()) || existing.email || "";
+    const useTz = timezone || existing.tz || context.tz || undefined;
+
+    const ok = await setSubscription(context.userId, { email: useEmail, apps: useApps, digest: true, time: useTime, tz: useTz });
+    if (!ok) return { error: "I couldn't save that just now." };
+    return {
+      status: useEmail ? "scheduled" : "saved_need_email",
+      apps: useApps.map(appLabel),
+      time: prettyTime(useTime),
+      timezone: useTz || "the user's timezone",
+      email: useEmail || null,
+      note: useEmail ? undefined : "Saved — but I still need an email address to actually send it. Ask the user for their email.",
+    };
+  },
+  async list_checkins(_input, context = {}) {
+    if (!context.userId) return { error: "There's no user id on this session." };
+    const s = await getSubscription(context.userId);
+    if (!s || !s.digest) return { status: "none", message: "No daily check-in is set up for this user." };
+    return { status: "active", apps: (s.apps || []).map(appLabel), time: prettyTime(s.time), timezone: s.tz, email: s.email || null };
+  },
+  async cancel_checkin(_input, context = {}) {
+    if (!context.userId) return { error: "There's no user id on this session." };
+    const s = await getSubscription(context.userId);
+    if (!s || !s.digest) return { status: "none", message: "There's no daily check-in to cancel." };
+    const ok = await setSubscription(context.userId, { ...s, digest: false });
+    return ok ? { status: "cancelled" } : { error: "I couldn't cancel it just now." };
+  },
+};
+
+// Fold notification tools into the always-on core set.
+coreSchemas.push(...notifySchemas);
+Object.assign(coreHandlers, notifyHandlers);
 
 // ---------------------------------------------------------------------------
 // BabyResell tool set
