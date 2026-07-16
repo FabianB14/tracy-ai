@@ -59,15 +59,23 @@ Send them the app URL. If prompted, they paste the access key from Step 1.
 
 ### 3. Worker copies their User ID and sends it to you
 
-In the app, they click the **⚙ gear (Settings)** in the top bar and copy the
-value in **User ID** (it looks like `web-9c754w3n`).
+In the app, they click the **⚙ gear (Settings)** in the top bar. The **User ID**
+field (it looks like `web-9c754w3n`) is **editable**, which makes this easy:
 
-**This must be copied exactly** — it's unique to that browser. Have them paste it
-to you character-for-character (copy/paste, don't retype).
+- **Recommended:** assign the worker **one consistent User ID** (e.g. `jane` or
+  `jane-support` — any unique string works) and have them **type it into that
+  field and Save on every browser/device they use.** Then you only add it to the
+  allowlist once, and it works everywhere.
+- Or let them keep the auto-generated `web-…` ID and just send it to you — but
+  then a new browser/device means a new ID.
 
-> Each browser/device generates its own User ID. If the worker later switches
-> devices or clears their browser, they'll get a new ID and you'll need to add
-> the new one.
+Either way, whatever value is in that field is what you add in Step 4 — copy it
+**exactly** (copy/paste, don't retype).
+
+> Because the User ID also keys their **memory** and **daily check-ins**, a single
+> consistent ID means Tracy recognizes them the same everywhere. Just make sure
+> each person's ID is **unique** — two people sharing an ID would share memory and
+> admin status.
 
 ### 4. You add their User ID to the allowlist
 
