@@ -5,7 +5,7 @@
 // serve a stale UI after an update — hence the version bump below. API calls to
 // the backend are cross-origin and are never handled here.
 
-const CACHE = "tracy-shell-v20";
+const CACHE = "tracy-shell-v21";
 const SHELL = [
   "./",
   "./index.html",
@@ -14,8 +14,12 @@ const SHELL = [
   "./config.js",
   "./corrections.js",
   "./native.bundle.js",
+  "./install.js",
   "./manifest.webmanifest",
   "./icon.svg",
+  "./icon-192.png",
+  "./icon-512.png",
+  "./apple-touch-icon.png",
 ];
 
 self.addEventListener("install", (e) => {
