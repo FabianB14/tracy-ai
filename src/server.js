@@ -24,6 +24,14 @@ import { getSubscription, setSubscription, listDigestSubscribers, markSent, loca
 import { buildDigest, knownApps, APPS } from "./digest.js";
 import { sendEmail, emailConfigured } from "./email.js";
 import { pushConfigured, getPublicKey, savePushSub, removePushSub, sendPushToUser } from "./push.js";
+import { kbEnabled, kbSearch, kbAdd, formatKnowledgeBlock } from "./knowledge.js";
+
+// Tools whose answers are LIVE/time-sensitive — never cache these as knowledge.
+const DYNAMIC_TOOLS = new Set([
+  "get_babyresell_stats", "get_babyresell_activity", "get_babyresell_moderation", "get_babyresell_shipping",
+  "web_search", "web_research", "analyze_media",
+  "schedule_checkin", "list_checkins", "cancel_checkin",
+]);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -69,6 +77,11 @@ app.post("/chat", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "messages array required" });
     }
 
+    // The current question (last user turn), used for knowledge retrieval + the
+    // learn-from-answer loop below.
+    const lastUserMsg = [...messages].reverse().find((m) => m && m.role === "user");
+    const lastText = lastUserMsg && typeof lastUserMsg.content === "string" ? lastUserMsg.content.trim() : "";
+
     // Bring-your-own-key: a team member can supply their own Anthropic API key
     // (from Settings, sent as the X-Anthropic-Key header) so usage bills THEIR
     // account. It is used only for this request and never logged. Falls back to
@@ -90,6 +103,17 @@ app.post("/chat", requireAuth, async (req, res) => {
         if (memoryBlock) systemPrompt += "\n\n---\n\n" + memoryBlock;
       } catch (err) {
         console.error("memory load failed:", err.message);
+      }
+    }
+
+    // Knowledge base: retrieve what Tracy has already learned that's relevant to
+    // this question, and give it to her as context (RAG). Best-effort.
+    if (kbEnabled() && lastText) {
+      try {
+        const kbBlock = formatKnowledgeBlock(await kbSearch(lastText, { userId }));
+        if (kbBlock) systemPrompt += "\n\n---\n\n" + kbBlock;
+      } catch (err) {
+        console.error("kb search failed:", err.message);
       }
     }
 
@@ -163,6 +187,14 @@ app.post("/chat", requireAuth, async (req, res) => {
     });
 
     res.json({ reply: text, surface: resolved.id, toolsUsed });
+
+    // Learn: save this answer to the knowledge base so Tracy can reuse it — but
+    // ONLY for general answers. Skip anything backed by a live/dynamic tool
+    // (stats, web search, etc.), errors, and trivially short replies. Fire-and-
+    // forget so it never delays the response.
+    if (kbEnabled() && lastText && text && text.length >= 40 && !toolsUsed.some((t) => DYNAMIC_TOOLS.has(t))) {
+      kbAdd({ scope: userId || "global", kind: "qa", question: lastText, content: text }).catch(() => {});
+    }
   } catch (err) {
     console.error(err);
     // If a user supplied their own key and it was rejected, tell them plainly.
