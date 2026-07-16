@@ -20,6 +20,9 @@ import { getMemories, formatMemoryBlock } from "./memory.js";
 import { authEnabled, requireAuth, handleAuth } from "./auth.js";
 import { babyresellDiag, pingStats } from "./babyresell.js";
 import { getAdminIds } from "./tools.js";
+import { getSubscription, setSubscription, listDigestSubscribers } from "./subscriptions.js";
+import { buildDigest, knownApps, APPS } from "./digest.js";
+import { sendEmail, emailConfigured } from "./email.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -209,6 +212,69 @@ app.get("/diag", async (req, res) => {
   }
 
   res.json(out);
+});
+
+// --- Notification subscriptions (daily check-in digests) ---
+
+// GET /subscription?userId=... — load a user's digest prefs + the app list.
+app.get("/subscription", requireAuth, async (req, res) => {
+  const userId = String(req.query.userId || "").trim();
+  if (!userId) return res.status(400).json({ error: "userId required" });
+  const sub = await getSubscription(userId);
+  res.json({
+    apps: knownApps(),
+    emailReady: emailConfigured(),
+    subscription: sub || { email: "", apps: [], digest: false },
+  });
+});
+
+// POST /subscription — save a user's digest prefs. Body: {userId, email, apps[], digest}.
+app.post("/subscription", requireAuth, async (req, res) => {
+  const { userId, email, apps, digest } = req.body || {};
+  if (!userId) return res.status(400).json({ error: "userId required" });
+  const ok = await setSubscription(userId, { email, apps, digest });
+  res.json({ ok });
+});
+
+// POST /subscription/test — send THIS user their digest right now, to verify
+// email works without waiting for the scheduled run.
+app.post("/subscription/test", requireAuth, async (req, res) => {
+  const userId = String((req.body && req.body.userId) || "").trim();
+  if (!userId) return res.status(400).json({ error: "userId required" });
+  if (!emailConfigured()) return res.status(400).json({ error: "Email isn't set up on the server yet (EMAIL_API_KEY / EMAIL_FROM)." });
+  const sub = await getSubscription(userId);
+  if (!sub || !sub.email) return res.status(400).json({ error: "Add your email and save first." });
+  const apps = sub.apps && sub.apps.length ? sub.apps : Object.keys(APPS);
+  try {
+    const { subject, text, html } = await buildDigest(apps);
+    const r = await sendEmail({ to: sub.email, subject: "[Test] " + subject, text, html });
+    return r.ok ? res.json({ ok: true, to: sub.email }) : res.status(502).json({ error: r.error });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /tasks/daily — run the daily digest for every subscriber. Protect with a
+// shared secret so only your Render Cron Job can trigger it:
+//   header  X-Tasks-Secret: <TASKS_SECRET>   (or ?secret=... query param)
+app.post("/tasks/daily", async (req, res) => {
+  const secret = process.env.TASKS_SECRET || "";
+  const given = req.get("X-Tasks-Secret") || req.query.secret || "";
+  if (!secret || given !== secret) return res.status(403).json({ error: "forbidden" });
+  if (!emailConfigured()) return res.json({ ok: false, note: "email-not-configured" });
+
+  const subs = await listDigestSubscribers();
+  const results = [];
+  for (const s of subs) {
+    try {
+      const { subject, text, html } = await buildDigest(s.apps);
+      const r = await sendEmail({ to: s.email, subject, text, html });
+      results.push({ userId: s.userId, to: s.email, ...(r.ok ? { sent: true } : { error: r.error }) });
+    } catch (err) {
+      results.push({ userId: s.userId, to: s.email, error: err.message });
+    }
+  }
+  res.json({ ok: true, count: subs.length, sent: results.filter((r) => r.sent).length, results });
 });
 
 const PORT = process.env.PORT || 3000;
