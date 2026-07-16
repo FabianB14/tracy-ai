@@ -402,12 +402,43 @@
   let sessionFinal = "";    // finalized text in the CURRENT session
   let sessionInterim = "";  // unstable in-progress text (shown live, NEVER committed)
 
-  function pendingText() { return (committed + " " + sessionFinal + " " + sessionInterim).replace(/\s+/g, " ").trim(); }
+  // Mobile recognizers often emit interim text that RESTATES already-finalized
+  // words, and sometimes re-finalize overlapping audio across sessions — which
+  // shows up as "how's how's how's baby baby resale". Collapse repeated adjacent
+  // words and repeated adjacent phrases so what's shown/sent reads sensibly.
+  function dedupeSpeech(text) {
+    let words = String(text).trim().split(/\s+/).filter(Boolean);
+    if (words.length < 2) return words.join(" ");
+    const norm = (w) => w.toLowerCase().replace(/[.,!?;:]+$/, "");
+    const eq = (a, b) => norm(a) === norm(b);
+    // 1) drop a word that immediately repeats the one before it
+    const out = [];
+    for (const w of words) { if (out.length && eq(out[out.length - 1], w)) continue; out.push(w); }
+    words = out;
+    // 2) collapse an immediately-repeated phrase (longest first): A B A B -> A B
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const maxN = Math.min(6, Math.floor(words.length / 2));
+      for (let n = maxN; n >= 2 && !changed; n--) {
+        for (let i = 0; i + 2 * n <= words.length; i++) {
+          let match = true;
+          for (let j = 0; j < n; j++) { if (!eq(words[i + j], words[i + n + j])) { match = false; break; } }
+          if (match) { words.splice(i + n, n); changed = true; break; }
+        }
+      }
+    }
+    return words.join(" ");
+  }
+
+  function pendingText() {
+    return dedupeSpeech((committed + " " + sessionFinal + " " + sessionInterim).replace(/\s+/g, " ").trim());
+  }
   // Commit only what the engine finalized — interim words are dropped, so a
-  // session ending mid-phrase can't fold the same partial in twice (the bug that
-  // produced "how'show'show's Baby" on mobile).
+  // session ending mid-phrase can't fold the same partial in twice. Dedupe on
+  // commit too, so cross-session re-finalized overlaps don't accumulate.
   function commitSession() {
-    if (sessionFinal) committed = (committed + " " + sessionFinal).replace(/\s+/g, " ").trim();
+    if (sessionFinal) committed = dedupeSpeech((committed + " " + sessionFinal).replace(/\s+/g, " ").trim());
     sessionFinal = ""; sessionInterim = "";
   }
   function clearSend() { clearTimeout(sendTimer); sendTimer = null; }
