@@ -654,6 +654,9 @@
 
   // ---- Wire up ----
   elSurface.value = settings.surface;
+  // If a previously-saved surface was removed from the picker (e.g. BabyResell,
+  // Car Parts), fall back to Desktop instead of showing a blank selection.
+  if (elSurface.selectedIndex < 0) { settings.surface = "desktop"; elSurface.value = "desktop"; store.set("surface", "desktop"); }
   elSurface.addEventListener("change", () => { settings.surface = elSurface.value; store.set("surface", settings.surface); });
   $("send-btn").addEventListener("click", () => send(elInput.value));
   elInput.addEventListener("keydown", (e) => { if (e.key === "Enter") send(elInput.value); });

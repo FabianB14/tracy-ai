@@ -31,13 +31,19 @@ const DEFAULT_SURFACE = "desktop";
 // Surfaces listed without a prompt file just get the core identity plus a note
 // about which surface they're on.
 const SURFACES = {
-  babyresell: { prompt: "babyresell", toolSets: ["babyresell"] },
-  carparts:   { prompt: "carparts",   toolSets: [] }, // fitment tools TBD
   desktop:    { prompt: "desktop",    toolSets: [] },
   mobile:     { prompt: "mobile",     toolSets: [] },
-  // Admin/owner surface — business stats for the founder. Tools are additionally
-  // gated to ADMIN_USER_IDS, so this surface is safe even if requested directly.
+  // Outside game studios integrating the Interverse platform / SDK.
+  developers: { prompt: "developers", toolSets: [] },
+  // New Interverse team members getting onboarded onto the platform.
+  newhire:    { prompt: "newhire",    toolSets: [] },
+  // Admin/owner surface — business stats for the founder (covers BabyResell).
+  // Tools are additionally gated to ADMIN_USER_IDS, so this surface is safe even
+  // if requested directly.
   admin:      { prompt: "admin",      toolSets: ["babyresell_admin"] },
+  // BabyResell customer surface — kept for the BabyResell app's own Tracy embed.
+  // It's just not shown in this web app's surface picker anymore.
+  babyresell: { prompt: "babyresell", toolSets: ["babyresell"] },
   // `game:NAME` requests resolve to this generic game surface, with NAME passed
   // through to the prompt. See resolveSurface().
   game:       { prompt: "game",       toolSets: [] },
