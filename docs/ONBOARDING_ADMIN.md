@@ -1,5 +1,9 @@
 # Onboarding a Worker to Tracy (Admin Access)
 
+> **Shareable web version:** https://claude.ai/code/artifact/47ac2fac-5441-446e-86dd-fc253e58115e
+> (Private by default — open it and use the page's **Share** menu to let a
+> teammate view it.)
+
 This guide walks you through giving a new team member **admin access** to Tracy —
 the level that can pull business numbers (BabyResell stats, revenue, moderation,
 shipping) on the **Admin** surface.
