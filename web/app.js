@@ -592,6 +592,7 @@
     updateInstallRow();
     updatePushRow();
     loadKbStats();
+    showBuild();
     modal.hidden = false;
   }
   function populateVoicePicker() {
@@ -684,6 +685,23 @@
       const data = await res.json().catch(() => ({}));
       notifyStatus(res.ok ? `Test sent to ${data.to || "your email"} — check your inbox (and spam).` : (data.error || "Couldn't send."), res.ok);
     } catch { notifyStatus("Couldn't reach the server.", false); }
+  }
+
+  // ---- Build version (which app build this device is running) ----
+  function swVersion() {
+    return new Promise((resolve) => {
+      if (!("serviceWorker" in navigator) || !navigator.serviceWorker.controller) return resolve(null);
+      const ch = new MessageChannel();
+      ch.port1.onmessage = (e) => resolve((e.data && e.data.version) || null);
+      try { navigator.serviceWorker.controller.postMessage({ type: "version" }, [ch.port2]); }
+      catch { resolve(null); }
+      setTimeout(() => resolve(null), 1000);
+    });
+  }
+  async function showBuild() {
+    const el = $("cfg-build"); if (!el) return;
+    const v = await swVersion();
+    el.textContent = v ? `Build ${v}` : "Build: (older service worker — clear site data to update)";
   }
 
   // ---- Tracy's learning (self-sufficiency readout) ----

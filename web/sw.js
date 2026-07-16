@@ -5,7 +5,7 @@
 // serve a stale UI after an update — hence the version bump below. API calls to
 // the backend are cross-origin and are never handled here.
 
-const CACHE = "tracy-shell-v23";
+const CACHE = "tracy-shell-v24";
 const SHELL = [
   "./",
   "./index.html",
@@ -74,4 +74,12 @@ self.addEventListener("notificationclick", (e) => {
       if (self.clients.openWindow) return self.clients.openWindow(target);
     })
   );
+});
+
+// Report the running build version (the cache name) so the app can show which
+// build a device is actually on — makes "am I on the latest?" easy to answer.
+self.addEventListener("message", (e) => {
+  if (e.data && e.data.type === "version" && e.ports && e.ports[0]) {
+    e.ports[0].postMessage({ version: CACHE });
+  }
 });
