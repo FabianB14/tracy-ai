@@ -5,7 +5,7 @@
 // serve a stale UI after an update — hence the version bump below. API calls to
 // the backend are cross-origin and are never handled here.
 
-const CACHE = "tracy-shell-v18";
+const CACHE = "tracy-shell-v22";
 const SHELL = [
   "./",
   "./index.html",
@@ -14,8 +14,12 @@ const SHELL = [
   "./config.js",
   "./corrections.js",
   "./native.bundle.js",
+  "./install.js",
   "./manifest.webmanifest",
   "./icon.svg",
+  "./icon-192.png",
+  "./icon-512.png",
+  "./apple-touch-icon.png",
 ];
 
 self.addEventListener("install", (e) => {
@@ -42,5 +46,32 @@ self.addEventListener("fetch", (e) => {
         return res;
       })
       .catch(() => caches.match(e.request))
+  );
+});
+
+// --- Push notifications ---
+self.addEventListener("push", (e) => {
+  let data = {};
+  try { data = e.data ? e.data.json() : {}; } catch { data = { body: e.data && e.data.text() }; }
+  const title = data.title || "Tracy";
+  const options = {
+    body: data.body || "",
+    icon: "./icon-192.png",
+    badge: "./icon-192.png",
+    data: { url: data.url || "./" },
+    tag: "tracy-checkin",
+  };
+  e.waitUntil(self.registration.showNotification(title, options));
+});
+
+// Focus an open tab if there is one, else open the app.
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const target = (e.notification.data && e.notification.data.url) || "./";
+  e.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      for (const c of list) { if ("focus" in c) return c.focus(); }
+      if (self.clients.openWindow) return self.clients.openWindow(target);
+    })
   );
 });

@@ -402,12 +402,43 @@
   let sessionFinal = "";    // finalized text in the CURRENT session
   let sessionInterim = "";  // unstable in-progress text (shown live, NEVER committed)
 
-  function pendingText() { return (committed + " " + sessionFinal + " " + sessionInterim).replace(/\s+/g, " ").trim(); }
+  // Mobile recognizers often emit interim text that RESTATES already-finalized
+  // words, and sometimes re-finalize overlapping audio across sessions — which
+  // shows up as "how's how's how's baby baby resale". Collapse repeated adjacent
+  // words and repeated adjacent phrases so what's shown/sent reads sensibly.
+  function dedupeSpeech(text) {
+    let words = String(text).trim().split(/\s+/).filter(Boolean);
+    if (words.length < 2) return words.join(" ");
+    const norm = (w) => w.toLowerCase().replace(/[.,!?;:]+$/, "");
+    const eq = (a, b) => norm(a) === norm(b);
+    // 1) drop a word that immediately repeats the one before it
+    const out = [];
+    for (const w of words) { if (out.length && eq(out[out.length - 1], w)) continue; out.push(w); }
+    words = out;
+    // 2) collapse an immediately-repeated phrase (longest first): A B A B -> A B
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const maxN = Math.min(6, Math.floor(words.length / 2));
+      for (let n = maxN; n >= 2 && !changed; n--) {
+        for (let i = 0; i + 2 * n <= words.length; i++) {
+          let match = true;
+          for (let j = 0; j < n; j++) { if (!eq(words[i + j], words[i + n + j])) { match = false; break; } }
+          if (match) { words.splice(i + n, n); changed = true; break; }
+        }
+      }
+    }
+    return words.join(" ");
+  }
+
+  function pendingText() {
+    return dedupeSpeech((committed + " " + sessionFinal + " " + sessionInterim).replace(/\s+/g, " ").trim());
+  }
   // Commit only what the engine finalized — interim words are dropped, so a
-  // session ending mid-phrase can't fold the same partial in twice (the bug that
-  // produced "how'show'show's Baby" on mobile).
+  // session ending mid-phrase can't fold the same partial in twice. Dedupe on
+  // commit too, so cross-session re-finalized overlaps don't accumulate.
   function commitSession() {
-    if (sessionFinal) committed = (committed + " " + sessionFinal).replace(/\s+/g, " ").trim();
+    if (sessionFinal) committed = dedupeSpeech((committed + " " + sessionFinal).replace(/\s+/g, " ").trim());
     sessionFinal = ""; sessionInterim = "";
   }
   function clearSend() { clearTimeout(sendTimer); sendTimer = null; }
@@ -558,6 +589,8 @@
     if (Corrections) $("cfg-corrections").value = formatCorrections(Corrections.list());
     populateVoicePicker();
     loadNotifySettings();
+    updateInstallRow();
+    updatePushRow();
     modal.hidden = false;
   }
   function populateVoicePicker() {
@@ -652,6 +685,76 @@
     } catch { notifyStatus("Couldn't reach the server.", false); }
   }
 
+  // ---- Install (backup entry point in Settings) ----
+  function updateInstallRow() {
+    const btn = $("cfg-install-btn"), hint = $("cfg-install-hint");
+    if (!btn || !hint) return;
+    const TI = window.TracyInstall;
+    if (TI && TI.isStandalone && TI.isStandalone()) { btn.hidden = true; hint.textContent = "Installed — you're using the app. ✓"; return; }
+    if (TI && TI.canPrompt && TI.canPrompt()) { btn.hidden = false; hint.textContent = "Add Tracy to your home screen for a full-screen app."; return; }
+    if (TI && TI.isIOS) { btn.hidden = true; hint.textContent = TI.iosHint(); return; }
+    btn.hidden = true;
+    hint.textContent = "To install, use your browser menu → “Install app” / “Add to Home screen.”";
+  }
+
+  // ---- Push notifications on this device ----
+  function urlB64ToUint8(base64) {
+    const pad = "=".repeat((4 - (base64.length % 4)) % 4);
+    const b64 = (base64 + pad).replace(/-/g, "+").replace(/_/g, "/");
+    const raw = atob(b64); const arr = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+    return arr;
+  }
+  function pushStatus(msg, ok) { const el = $("cfg-push-status"); if (el) { el.textContent = msg || ""; el.style.color = ok === false ? "#ff9a9a" : ""; } }
+  const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  async function currentPushSub() { try { const reg = await navigator.serviceWorker.ready; return await reg.pushManager.getSubscription(); } catch { return null; } }
+  async function updatePushRow() {
+    const cb = $("cfg-push"); if (!cb) return;
+    if (!pushSupported()) {
+      cb.checked = false; cb.disabled = true;
+      const TI = window.TracyInstall;
+      pushStatus(TI && TI.isIOS && !(TI.isStandalone && TI.isStandalone())
+        ? "On iPhone, install Tracy to your home screen first (above), then enable this."
+        : "This browser doesn't support push notifications.");
+      return;
+    }
+    cb.disabled = false;
+    const sub = await currentPushSub();
+    cb.checked = !!sub;
+    pushStatus(sub ? "On for this device." : "");
+  }
+  async function enablePush() {
+    const cb = $("cfg-push");
+    pushStatus("Enabling…");
+    if (!pushSupported()) { pushStatus("Not supported on this browser.", false); if (cb) cb.checked = false; return; }
+    let cfg;
+    try { cfg = await fetch(api() + "/push/config").then((r) => r.json()); }
+    catch { pushStatus("Couldn't reach the server.", false); if (cb) cb.checked = false; return; }
+    if (!cfg.configured || !cfg.publicKey) { pushStatus("Push isn't set up on the server yet.", false); if (cb) cb.checked = false; return; }
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") { pushStatus("Notifications permission was denied — allow it in your browser settings.", false); if (cb) cb.checked = false; return; }
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(cfg.publicKey) });
+      const res = await fetch(api() + "/push/subscribe", { method: "POST", headers: authHeaders(true), body: JSON.stringify({ userId: settings.userId, subscription: sub }) });
+      pushStatus(res.ok ? "On for this device — your check-ins will arrive here." : "Couldn't save this device.", res.ok);
+      if (cb) cb.checked = res.ok;
+    } catch (e) { pushStatus("Couldn't enable: " + e.message, false); if (cb) cb.checked = false; }
+  }
+  async function disablePush() {
+    pushStatus("Turning off…");
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        await fetch(api() + "/push/unsubscribe", { method: "POST", headers: authHeaders(true), body: JSON.stringify({ endpoint: sub.endpoint }) }).catch(() => {});
+        await sub.unsubscribe();
+      }
+      pushStatus("Off for this device.");
+    } catch (e) { pushStatus("Couldn't turn off: " + e.message, false); }
+  }
+
   // ---- Wire up ----
   elSurface.value = settings.surface;
   // If a previously-saved surface was removed from the picker (e.g. BabyResell,
@@ -667,6 +770,8 @@
   $("cfg-save").addEventListener("click", saveSettings);
   $("cfg-notify-save").addEventListener("click", saveNotify);
   $("cfg-notify-test").addEventListener("click", testNotify);
+  $("cfg-install-btn").addEventListener("click", async () => { if (window.TracyInstall) { await window.TracyInstall.prompt(); updateInstallRow(); } });
+  $("cfg-push").addEventListener("change", (e) => { if (e.target.checked) enablePush(); else disablePush(); });
   $("cfg-rate").addEventListener("input", (e) => { $("cfg-rate-val").textContent = (+e.target.value).toFixed(2); });
   $("cfg-pitch").addEventListener("input", (e) => { $("cfg-pitch-val").textContent = (+e.target.value).toFixed(2); });
   $("cfg-silence").addEventListener("input", (e) => { $("cfg-silence-val").textContent = (+e.target.value).toFixed(1) + "s"; });

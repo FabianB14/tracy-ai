@@ -79,6 +79,13 @@ export async function buildDigest(apps) {
   }
   text += "— Tracy";
 
+  // Compact one-liner for a push notification body.
+  const summaryParts = sections
+    .filter((s) => s.lines && s.lines.length)
+    .map((s) => `${s.label}: ${s.lines[0]}`);
+  let summary = summaryParts.join(" · ") || "Your daily check-in is ready.";
+  if (summary.length > 160) summary = summary.slice(0, 157) + "…";
+
   const html =
     `<div style="max-width:560px;margin:0 auto;font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#fff;padding:24px">` +
     `<div style="font-weight:800;letter-spacing:2px;color:#0891b2;font-size:14px;margin-bottom:4px">TRACY</div>` +
@@ -87,5 +94,5 @@ export async function buildDigest(apps) {
     `<div style="color:#94a3b8;font-size:12px;margin-top:8px;border-top:1px solid #e2e8f0;padding-top:12px">You're getting this because you turned on daily check-ins in Tracy. Turn it off anytime in Settings.</div>` +
     `</div>`;
 
-  return { subject, text, html };
+  return { subject, text, html, summary };
 }
