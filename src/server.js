@@ -24,7 +24,7 @@ import { getSubscription, setSubscription, listDigestSubscribers, markSent, loca
 import { buildDigest, knownApps, APPS } from "./digest.js";
 import { sendEmail, emailConfigured } from "./email.js";
 import { pushConfigured, getPublicKey, savePushSub, removePushSub, sendPushToUser } from "./push.js";
-import { kbEnabled, kbSearch, kbAdd, formatKnowledgeBlock } from "./knowledge.js";
+import { kbEnabled, kbSearch, kbAdd, formatKnowledgeBlock, kbIngestDoc } from "./knowledge.js";
 import { geminiConfigured, geminiChat } from "./gemini.js";
 import { logAnswer, getAnswerStats } from "./answerlog.js";
 
@@ -150,7 +150,7 @@ app.post("/chat", requireAuth, async (req, res) => {
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       const params = {
         model: MODEL,
-        max_tokens: 1024,
+        max_tokens: 2048,
         system: systemPrompt,
         messages: convo,
       };
@@ -203,6 +203,17 @@ app.post("/chat", requireAuth, async (req, res) => {
       answerPath = "model";
     }
 
+    // Never return an empty bubble ("(no reply)"). This can happen when a big
+    // paste makes the model spend its whole budget on a tool call and come back
+    // with no text. Give a sensible confirmation instead.
+    if (!text || !text.trim()) {
+      text = toolsUsed.includes("remember")
+        ? "Got it — I've saved that."
+        : toolsUsed.length
+          ? "Done."
+          : "Sorry, I didn't catch that — mind trying again? (For a long document, use the 📎 upload button so I can add it to my knowledge.)";
+    }
+
     // Log the exchange (see src/logging.js — needs user-consent language in the
     // apps before production).
     logConversation({
@@ -245,6 +256,22 @@ app.get("/health", (_req, res) => res.json({ ok: true, assistant: "Tracy", authR
 // Claude (aggregate counts only; no message content).
 app.get("/kb/stats", async (_req, res) => {
   res.json({ enabled: kbEnabled(), ...(await getAnswerStats()) });
+});
+
+// POST /kb/upload — ingest a document into Tracy's knowledge base (chunked +
+// embedded). Body: { userId, title, content, scope? }. scope "global" (default)
+// shares it with everyone; "me" keeps it to the uploading user.
+app.post("/kb/upload", requireAuth, async (req, res) => {
+  const { userId, title, content, scope } = req.body || {};
+  if (!content || !String(content).trim()) return res.status(400).json({ error: "content required" });
+  if (!kbEnabled()) return res.status(400).json({ error: "Knowledge base isn't set up on the server yet (needs a Gemini key)." });
+  const useScope = scope === "me" && userId ? userId : "global";
+  try {
+    const { added, skipped } = await kbIngestDoc({ scope: useScope, title: String(title || "").slice(0, 200), text: String(content).slice(0, 200000) });
+    res.json({ ok: true, added, skipped });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // GET /diag?userId=<your Tracy userId>

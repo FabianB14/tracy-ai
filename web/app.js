@@ -788,6 +788,29 @@
     } catch (e) { pushStatus("Couldn't turn off: " + e.message, false); }
   }
 
+  // ---- Document upload (learn into the knowledge base) ----
+  async function uploadDoc(file) {
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) { addMessage("system", "That file's a bit large (keep it under ~2 MB of text). Try splitting it up."); return; }
+    let text = "";
+    try { text = await file.text(); } catch { addMessage("system", "Couldn't read that file."); return; }
+    if (!text.trim()) { addMessage("system", "That file looks empty."); return; }
+    const note = addMessage("system", `Learning “${file.name}”…`);
+    try {
+      const res = await fetch(api() + "/kb/upload", {
+        method: "POST", headers: authHeaders(true),
+        body: JSON.stringify({ userId: settings.userId, title: file.name, content: text }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        note.textContent = `Learned “${file.name}” — added ${data.added} section${data.added === 1 ? "" : "s"} to Tracy's knowledge` +
+          (data.skipped ? ` (${data.skipped} already known)` : "") + ".";
+      } else {
+        note.textContent = data.error || "Couldn't learn that file.";
+      }
+    } catch { note.textContent = "Couldn't reach the server."; }
+  }
+
   // ---- Wire up ----
   elSurface.value = settings.surface;
   // If a previously-saved surface was removed from the picker (e.g. BabyResell,
@@ -798,6 +821,8 @@
   elInput.addEventListener("keydown", (e) => { if (e.key === "Enter") send(elInput.value); });
   elInput.addEventListener("input", () => { if (!elInput.value) { lastSttRaw = null; lastSttCorrected = null; } });
   elMic.addEventListener("click", toggleMic);
+  $("upload-btn").addEventListener("click", () => $("upload-input").click());
+  $("upload-input").addEventListener("change", (e) => { const f = e.target.files && e.target.files[0]; uploadDoc(f); e.target.value = ""; });
   elHF.addEventListener("click", () => setHandsFree(!handsFree));
   $("settings-btn").addEventListener("click", openSettings);
   $("cfg-save").addEventListener("click", saveSettings);
