@@ -107,6 +107,31 @@ export async function kbAdd({ scope = "global", kind = "qa", question = "", cont
   } catch (err) { console.error("kbAdd failed:", err.message); return false; }
 }
 
+// Split a document into ~900-char chunks on blank lines, remembering the nearest
+// heading as each chunk's title. Used by the UI upload + the ingest script.
+export function chunkText(text) {
+  const paras = String(text).replace(/\r\n/g, "\n").split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+  const chunks = []; let buf = "", title = "";
+  for (const p of paras) {
+    if (/^#{1,6}\s/.test(p)) title = p.replace(/^#{1,6}\s+/, "").trim();
+    if ((buf + "\n\n" + p).length > 900) { if (buf) chunks.push({ title, content: buf }); buf = p; }
+    else buf = buf ? buf + "\n\n" + p : p;
+  }
+  if (buf) chunks.push({ title, content: buf });
+  return chunks;
+}
+
+// Ingest a whole document into the knowledge base as chunks. Returns counts.
+export async function kbIngestDoc({ scope = "global", title = "", text = "" }) {
+  if (!kbEnabled() || !String(text).trim()) return { added: 0, skipped: 0 };
+  let added = 0, skipped = 0;
+  for (const c of chunkText(text)) {
+    const ok = await kbAdd({ scope, kind: "doc", question: c.title || title, content: c.content });
+    ok ? added++ : skipped++;
+  }
+  return { added, skipped };
+}
+
 // Format retrieved knowledge as a system-prompt block. "" when there's nothing.
 export function formatKnowledgeBlock(hits) {
   if (!hits || !hits.length) return "";

@@ -20,16 +20,48 @@ export function geminiConfigured() {
   return Boolean(KEY);
 }
 
-// Lazily construct the client the first time it's needed. Dynamic import means a
+// Lazily construct clients the first time they're needed. Dynamic import means a
 // missing package can't crash the server at startup — only a call would fail,
 // and only when Gemini is actually configured and used.
-let _clientPromise = null;
-async function getClient() {
-  if (!KEY) throw new Error("gemini-not-configured");
-  if (!_clientPromise) {
-    _clientPromise = import("@google/genai").then(({ GoogleGenAI }) => new GoogleGenAI({ apiKey: KEY }));
+//
+// Clients are cached per API key: the server's own GEMINI_API_KEY, plus any
+// bring-your-own keys callers pass in (e.g. a PartOut user's Gemini key, so the
+// mechanic's generation bills THEIR account, not Tracy's).
+let _genaiModule = null;
+const _clients = new Map();
+async function getClient(apiKey) {
+  const key = (apiKey || KEY || "").trim();
+  if (!key) throw new Error("gemini-not-configured");
+  if (_clients.has(key)) return _clients.get(key);
+  if (!_genaiModule) _genaiModule = import("@google/genai");
+  const p = _genaiModule.then(({ GoogleGenAI }) => new GoogleGenAI({ apiKey: key }));
+  _clients.set(key, p);
+  return p;
+}
+
+// Map Tracy's message history ([{role, content}] where content is a string or
+// an array of Anthropic content blocks) into Gemini `contents`, so a Gemini
+// answer keeps the full conversation (and any attached photos), not just the
+// last line.
+function toGeminiContents(history) {
+  const out = [];
+  for (const m of history || []) {
+    if (!m) continue;
+    const role = m.role === "assistant" ? "model" : "user";
+    const parts = [];
+    if (typeof m.content === "string") {
+      if (m.content) parts.push({ text: m.content });
+    } else if (Array.isArray(m.content)) {
+      for (const b of m.content) {
+        if (b?.type === "text" && b.text) parts.push({ text: b.text });
+        else if (b?.type === "image" && b.source?.data) {
+          parts.push({ inlineData: { mimeType: b.source.media_type || "image/jpeg", data: b.source.data } });
+        }
+      }
+    }
+    if (parts.length) out.push({ role, parts });
   }
-  return _clientPromise;
+  return out;
 }
 
 // Don't let a slow/hung Gemini call block Tracy's reply.
@@ -71,15 +103,26 @@ export async function webResearch(query) {
   }
 }
 
-// Plain chat completion via Gemini (the cheap model) — used by the knowledge
-// confidence gate to answer a well-known question without calling Claude.
-export async function geminiChat(system, user) {
+// Chat completion via Gemini — used by the knowledge confidence gate and the
+// PartOut hybrid path to answer without calling Claude.
+//   system  — the system prompt (surface identity + retrieved knowledge)
+//   user    — the latest user text (used when no history is given)
+//   opts    — { apiKey?, history? }
+//     apiKey  : a caller's own Gemini key (bring-your-own); falls back to the
+//               server key. This is what keeps the mechanic's cost on the user.
+//     history : full [{role, content}] conversation, so Gemini answers with
+//               context (and any attached photos), not just the last line.
+export async function geminiChat(system, user, opts = {}) {
+  const { apiKey, history } = opts;
   try {
-    const ai = await getClient();
+    const ai = await getClient(apiKey);
+    const contents = history && history.length
+      ? toGeminiContents(history)
+      : String(user || "");
     const res = await withTimeout(
       ai.models.generateContent({
         model: MODEL,
-        contents: String(user || ""),
+        contents,
         config: { systemInstruction: String(system || "") },
       }),
       20000,

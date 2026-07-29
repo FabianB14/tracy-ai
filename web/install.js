@@ -16,8 +16,8 @@
   }
   function iosHint() {
     return isIOSSafari
-      ? "Tap the Share button, then “Add to Home Screen.”"
-      : "Open this page in Safari, then Share → “Add to Home Screen.”";
+      ? "Tap the Share icon (the box with an up-arrow) at the bottom of Safari, then scroll down and tap “Add to Home Screen.”"
+      : "This only works in Safari on iPhone. Open this page in Safari, tap the Share icon, then “Add to Home Screen.”";
   }
 
   var deferred = null;

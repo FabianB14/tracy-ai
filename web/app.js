@@ -592,6 +592,7 @@
     updateInstallRow();
     updatePushRow();
     loadKbStats();
+    showBuild();
     modal.hidden = false;
   }
   function populateVoicePicker() {
@@ -686,6 +687,23 @@
     } catch { notifyStatus("Couldn't reach the server.", false); }
   }
 
+  // ---- Build version (which app build this device is running) ----
+  function swVersion() {
+    return new Promise((resolve) => {
+      if (!("serviceWorker" in navigator) || !navigator.serviceWorker.controller) return resolve(null);
+      const ch = new MessageChannel();
+      ch.port1.onmessage = (e) => resolve((e.data && e.data.version) || null);
+      try { navigator.serviceWorker.controller.postMessage({ type: "version" }, [ch.port2]); }
+      catch { resolve(null); }
+      setTimeout(() => resolve(null), 1000);
+    });
+  }
+  async function showBuild() {
+    const el = $("cfg-build"); if (!el) return;
+    const v = await swVersion();
+    el.textContent = v ? `Build ${v}` : "Build: (older service worker — clear site data to update)";
+  }
+
   // ---- Tracy's learning (self-sufficiency readout) ----
   async function loadKbStats() {
     const el = $("cfg-kb-stats"); if (!el) return;
@@ -770,6 +788,40 @@
     } catch (e) { pushStatus("Couldn't turn off: " + e.message, false); }
   }
 
+  // ---- Document upload (learn into the knowledge base) ----
+  function arrayBufferToBase64(buf) {
+    const bytes = new Uint8Array(buf); let bin = ""; const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    return btoa(bin);
+  }
+  async function uploadDoc(file) {
+    if (!file) return;
+    const isPdf = /\.pdf$/i.test(file.name) || file.type === "application/pdf";
+    const maxMB = isPdf ? 10 : 2;
+    if (file.size > maxMB * 1024 * 1024) { addMessage("system", `That file's too big (max ${maxMB} MB). Try splitting it.`); return; }
+    const note = addMessage("system", `Learning “${file.name}”…`);
+    let body;
+    try {
+      if (isPdf) {
+        body = { userId: settings.userId, title: file.name, pdfBase64: arrayBufferToBase64(await file.arrayBuffer()) };
+      } else {
+        const text = await file.text();
+        if (!text.trim()) { note.textContent = "That file looks empty."; return; }
+        body = { userId: settings.userId, title: file.name, content: text };
+      }
+    } catch { note.textContent = "Couldn't read that file."; return; }
+    try {
+      const res = await fetch(api() + "/kb/upload", { method: "POST", headers: authHeaders(true), body: JSON.stringify(body) });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        note.textContent = `Learned “${file.name}” — added ${data.added} section${data.added === 1 ? "" : "s"} to Tracy's knowledge` +
+          (data.skipped ? ` (${data.skipped} already known)` : "") + ".";
+      } else {
+        note.textContent = data.error || "Couldn't learn that file.";
+      }
+    } catch { note.textContent = "Couldn't reach the server."; }
+  }
+
   // ---- Wire up ----
   elSurface.value = settings.surface;
   // If a previously-saved surface was removed from the picker (e.g. BabyResell,
@@ -780,6 +832,8 @@
   elInput.addEventListener("keydown", (e) => { if (e.key === "Enter") send(elInput.value); });
   elInput.addEventListener("input", () => { if (!elInput.value) { lastSttRaw = null; lastSttCorrected = null; } });
   elMic.addEventListener("click", toggleMic);
+  $("upload-btn").addEventListener("click", () => $("upload-input").click());
+  $("upload-input").addEventListener("change", (e) => { const f = e.target.files && e.target.files[0]; uploadDoc(f); e.target.value = ""; });
   elHF.addEventListener("click", () => setHandsFree(!handsFree));
   $("settings-btn").addEventListener("click", openSettings);
   $("cfg-save").addEventListener("click", saveSettings);

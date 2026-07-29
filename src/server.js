@@ -24,7 +24,8 @@ import { getSubscription, setSubscription, listDigestSubscribers, markSent, loca
 import { buildDigest, knownApps, APPS } from "./digest.js";
 import { sendEmail, emailConfigured } from "./email.js";
 import { pushConfigured, getPublicKey, savePushSub, removePushSub, sendPushToUser } from "./push.js";
-import { kbEnabled, kbSearch, kbAdd, formatKnowledgeBlock } from "./knowledge.js";
+import { kbEnabled, kbSearch, kbAdd, formatKnowledgeBlock, kbIngestDoc } from "./knowledge.js";
+import { extractPdfText } from "./pdf.js";
 import { geminiConfigured, geminiChat } from "./gemini.js";
 import { logAnswer, getAnswerStats } from "./answerlog.js";
 
@@ -53,7 +54,7 @@ const CORS_ORIGINS = process.env.CORS_ORIGINS
   : undefined;
 app.use(cors(CORS_ORIGINS ? { origin: CORS_ORIGINS } : undefined));
 
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "16mb" })); // room for base64-encoded PDF uploads
 
 // Serve the frontend (web/) from this same server, so one URL gives both the
 // UI and the API: GET / → Tracy's chat app, POST /chat → the API. You can still
@@ -61,9 +62,28 @@ app.use(express.json({ limit: "2mb" }));
 // so the backend URL isn't a bare "Cannot GET /".
 app.use(express.static(path.join(__dirname, "..", "web")));
 
+// Extract the plain text from a message's content, which may be either a plain
+// string OR an array of Anthropic content blocks (e.g. a car photo + a question
+// from PartOut's mechanic). Used for knowledge retrieval and the learn-from-
+// answer loop so image-bearing turns still hit Tracy's memory.
+function messageText(content) {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .filter((b) => b && b.type === "text" && typeof b.text === "string")
+      .map((b) => b.text)
+      .join(" ")
+      .trim();
+  }
+  return "";
+}
+
 // POST /chat
 // Body: {
-//   messages: [{ role:"user"|"assistant", content:"..." }],  // required
+//   messages: [{ role:"user"|"assistant", content }],  // required
+//     content is a string, OR an array of Anthropic content blocks
+//     (e.g. [{type:"text",text}, {type:"image",source:{...}}]) so apps like
+//     PartOut can send a photo alongside the question.
 //   surface?: string,   // "babyresell" | "carparts" | "desktop" | "mobile" | "game:NAME"
 //   userId?:  string,   // caller's user id, for logging/personalization
 // }
@@ -79,10 +99,23 @@ app.post("/chat", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "messages array required" });
     }
 
+    // Sanitize: Anthropic's API rejects turns with empty content (e.g. an app
+    // whose assistant turn was an image with no text). Drop them rather than
+    // 500 — consecutive same-role turns are fine with the API.
+    const cleanMessages = messages.filter((m) => {
+      if (!m) return false;
+      if (typeof m.content === "string") return m.content.trim().length > 0;
+      if (Array.isArray(m.content)) return m.content.length > 0;
+      return Boolean(m.content);
+    });
+    if (cleanMessages.length === 0) {
+      return res.status(400).json({ error: "messages array required" });
+    }
+
     // The current question (last user turn), used for knowledge retrieval + the
     // learn-from-answer loop below.
-    const lastUserMsg = [...messages].reverse().find((m) => m && m.role === "user");
-    const lastText = lastUserMsg && typeof lastUserMsg.content === "string" ? lastUserMsg.content.trim() : "";
+    const lastUserMsg = [...cleanMessages].reverse().find((m) => m && m.role === "user");
+    const lastText = lastUserMsg ? messageText(lastUserMsg.content) : "";
 
     // Bring-your-own-key: a team member can supply their own Anthropic API key
     // (from Settings, sent as the X-Anthropic-Key header) so usage bills THEIR
@@ -90,6 +123,12 @@ app.post("/chat", requireAuth, async (req, res) => {
     // the shared server key when absent.
     const byok = (req.headers["x-anthropic-key"] || "").trim();
     const client = byok.startsWith("sk-ant-") ? new Anthropic({ apiKey: byok }) : anthropic;
+
+    // Bring-your-own Gemini key: an app (e.g. PartOut, where each user has their
+    // own Gemini key) can send X-Gemini-Key so Gemini generation bills THAT
+    // account. Embeddings/memory stay on the server key; only generation moves.
+    const byoGemini = (req.headers["x-gemini-key"] || "").trim();
+    const geminiUsable = geminiConfigured() || Boolean(byoGemini);
 
     // Resolve where Tracy is: core identity + surface prompt + this surface's tools.
     const resolved = resolveSurface(surface);
@@ -128,29 +167,37 @@ app.post("/chat", requireAuth, async (req, res) => {
     // Confidence gate: if Tracy clearly already knows this, answer from her own
     // knowledge instead of calling Claude. A very strong match reuses the saved
     // answer verbatim (no model call at all); a strong match uses the cheap
-    // model grounded in that knowledge; otherwise it falls through to the full
-    // Claude path below. Thresholds are tunable via env.
+    // (Gemini) model grounded in that knowledge; otherwise it falls through to
+    // the full Claude path below. Thresholds are tunable via env.
     const topScore = kbHits.length ? kbHits[0].score : 0;
     const DIRECT_T = Number(process.env.KB_DIRECT_THRESHOLD || 0.95);
     const CHEAP_T = Number(process.env.KB_ANSWER_THRESHOLD || 0.88);
+    // Gemini gets the user's own key (if they sent one) so generation bills them.
+    const geminiOpts = { apiKey: byoGemini || undefined, history: cleanMessages };
     if (kbEnabled() && topScore >= DIRECT_T) {
       text = kbHits[0].content;
       answerPath = "kb-direct";
-    } else if (kbEnabled() && topScore >= CHEAP_T && geminiConfigured()) {
-      const g = await geminiChat(systemPrompt, lastText);
+    } else if (kbEnabled() && topScore >= CHEAP_T && geminiUsable) {
+      const g = await geminiChat(systemPrompt, lastText, geminiOpts);
       if (g) { text = g; answerPath = "kb-gemini"; }
+    } else if (resolved.id === "carparts" && geminiUsable) {
+      // PartOut hybrid: on a memory miss, answer with Gemini first (the user's
+      // key) and only fall back to Claude if Gemini can't. The answer is saved
+      // to shared memory below, so the next person gets it without any AI call.
+      const g = await geminiChat(systemPrompt, lastText, geminiOpts);
+      if (g) { text = g; answerPath = "gemini-first"; }
     }
 
     // Full Claude path (with tools) — only when the gate didn't answer.
     if (text === null) {
-    const convo = [...messages];
+    const convo = [...cleanMessages];
     let response;
 
     // Tool-use loop: keep going until Tracy answers in plain text.
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       const params = {
         model: MODEL,
-        max_tokens: 1024,
+        max_tokens: 2048,
         system: systemPrompt,
         messages: convo,
       };
@@ -203,6 +250,17 @@ app.post("/chat", requireAuth, async (req, res) => {
       answerPath = "model";
     }
 
+    // Never return an empty bubble ("(no reply)"). This can happen when a big
+    // paste makes the model spend its whole budget on a tool call and come back
+    // with no text. Give a sensible confirmation instead.
+    if (!text || !text.trim()) {
+      text = toolsUsed.includes("remember")
+        ? "Got it — I've saved that."
+        : toolsUsed.length
+          ? "Done."
+          : "Sorry, I didn't catch that — mind trying again? (For a long document, use the 📎 upload button so I can add it to my knowledge.)";
+    }
+
     // Log the exchange (see src/logging.js — needs user-consent language in the
     // apps before production).
     logConversation({
@@ -222,10 +280,15 @@ app.post("/chat", requireAuth, async (req, res) => {
     // ONLY for fresh general answers from the model path. Skip anything backed by
     // a live/dynamic tool (stats, web search, etc.), errors, trivially short
     // replies, and answers that already came FROM the knowledge base. Fire-and-
-    // forget so it never delays the response.
-    if (answerPath === "model" && kbEnabled() && lastText && text && text.length >= 40 &&
+    // forget so it never delays the response. Both the full Claude path and the
+    // PartOut Gemini-first path produce fresh answers worth remembering.
+    if ((answerPath === "model" || answerPath === "gemini-first") &&
+        kbEnabled() && lastText && text && text.length >= 40 &&
         !toolsUsed.some((t) => DYNAMIC_TOOLS.has(t))) {
-      kbAdd({ scope: userId || "global", kind: "qa", question: lastText, content: text }).catch(() => {});
+      // Car-repair knowledge is universal (a 2015 Civic alternator R&R is the same
+      // for everyone), so save it globally; other answers stay scoped to the user.
+      const kbScope = resolved.id === "carparts" ? "global" : (userId || "global");
+      kbAdd({ scope: kbScope, kind: "qa", question: lastText, content: text }).catch(() => {});
     }
   } catch (err) {
     console.error(err);
@@ -245,6 +308,33 @@ app.get("/health", (_req, res) => res.json({ ok: true, assistant: "Tracy", authR
 // Claude (aggregate counts only; no message content).
 app.get("/kb/stats", async (_req, res) => {
   res.json({ enabled: kbEnabled(), ...(await getAnswerStats()) });
+});
+
+// POST /kb/upload — ingest a document into Tracy's knowledge base (chunked +
+// embedded). Body: { userId, title, content, scope? }. scope "global" (default)
+// shares it with everyone; "me" keeps it to the uploading user.
+app.post("/kb/upload", requireAuth, async (req, res) => {
+  const { userId, title, content, scope, pdfBase64 } = req.body || {};
+  if (!kbEnabled()) return res.status(400).json({ error: "Knowledge base isn't set up on the server yet (needs a Gemini key)." });
+
+  // A PDF arrives base64-encoded; extract its text first. Otherwise use `content`.
+  let text = content;
+  if (pdfBase64) {
+    try {
+      text = await extractPdfText(Buffer.from(pdfBase64, "base64"));
+    } catch (err) {
+      return res.status(400).json({ error: "Couldn't read that PDF: " + err.message });
+    }
+  }
+  if (!text || !String(text).trim()) return res.status(400).json({ error: "No readable text found in that file (a scanned/image-only PDF won't work)." });
+
+  const useScope = scope === "me" && userId ? userId : "global";
+  try {
+    const { added, skipped } = await kbIngestDoc({ scope: useScope, title: String(title || "").slice(0, 200), text: String(text).slice(0, 400000) });
+    res.json({ ok: true, added, skipped });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // GET /diag?userId=<your Tracy userId>
