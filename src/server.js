@@ -62,9 +62,28 @@ app.use(express.json({ limit: "16mb" })); // room for base64-encoded PDF uploads
 // so the backend URL isn't a bare "Cannot GET /".
 app.use(express.static(path.join(__dirname, "..", "web")));
 
+// Extract the plain text from a message's content, which may be either a plain
+// string OR an array of Anthropic content blocks (e.g. a car photo + a question
+// from PartOut's mechanic). Used for knowledge retrieval and the learn-from-
+// answer loop so image-bearing turns still hit Tracy's memory.
+function messageText(content) {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .filter((b) => b && b.type === "text" && typeof b.text === "string")
+      .map((b) => b.text)
+      .join(" ")
+      .trim();
+  }
+  return "";
+}
+
 // POST /chat
 // Body: {
-//   messages: [{ role:"user"|"assistant", content:"..." }],  // required
+//   messages: [{ role:"user"|"assistant", content }],  // required
+//     content is a string, OR an array of Anthropic content blocks
+//     (e.g. [{type:"text",text}, {type:"image",source:{...}}]) so apps like
+//     PartOut can send a photo alongside the question.
 //   surface?: string,   // "babyresell" | "carparts" | "desktop" | "mobile" | "game:NAME"
 //   userId?:  string,   // caller's user id, for logging/personalization
 // }
@@ -83,7 +102,7 @@ app.post("/chat", requireAuth, async (req, res) => {
     // The current question (last user turn), used for knowledge retrieval + the
     // learn-from-answer loop below.
     const lastUserMsg = [...messages].reverse().find((m) => m && m.role === "user");
-    const lastText = lastUserMsg && typeof lastUserMsg.content === "string" ? lastUserMsg.content.trim() : "";
+    const lastText = lastUserMsg ? messageText(lastUserMsg.content) : "";
 
     // Bring-your-own-key: a team member can supply their own Anthropic API key
     // (from Settings, sent as the X-Anthropic-Key header) so usage bills THEIR
