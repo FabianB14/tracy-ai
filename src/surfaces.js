@@ -33,6 +33,8 @@ const DEFAULT_SURFACE = "desktop";
 const SURFACES = {
   desktop:    { prompt: "desktop",    toolSets: [] },
   mobile:     { prompt: "mobile",     toolSets: [] },
+  // PartOut — car repair & parts assistant. Builds a shared repair knowledge base.
+  carparts:   { prompt: "carparts",   toolSets: [] },
   // Outside game studios integrating the Interverse platform / SDK.
   developers: { prompt: "developers", toolSets: [] },
   // New Interverse team members getting onboarded onto the platform.

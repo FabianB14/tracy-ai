@@ -25,6 +25,7 @@ import { buildDigest, knownApps, APPS } from "./digest.js";
 import { sendEmail, emailConfigured } from "./email.js";
 import { pushConfigured, getPublicKey, savePushSub, removePushSub, sendPushToUser } from "./push.js";
 import { kbEnabled, kbSearch, kbAdd, formatKnowledgeBlock, kbIngestDoc } from "./knowledge.js";
+import { extractPdfText } from "./pdf.js";
 import { geminiConfigured, geminiChat } from "./gemini.js";
 import { logAnswer, getAnswerStats } from "./answerlog.js";
 
@@ -53,7 +54,7 @@ const CORS_ORIGINS = process.env.CORS_ORIGINS
   : undefined;
 app.use(cors(CORS_ORIGINS ? { origin: CORS_ORIGINS } : undefined));
 
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "16mb" })); // room for base64-encoded PDF uploads
 
 // Serve the frontend (web/) from this same server, so one URL gives both the
 // UI and the API: GET / → Tracy's chat app, POST /chat → the API. You can still
@@ -236,7 +237,10 @@ app.post("/chat", requireAuth, async (req, res) => {
     // forget so it never delays the response.
     if (answerPath === "model" && kbEnabled() && lastText && text && text.length >= 40 &&
         !toolsUsed.some((t) => DYNAMIC_TOOLS.has(t))) {
-      kbAdd({ scope: userId || "global", kind: "qa", question: lastText, content: text }).catch(() => {});
+      // Car-repair knowledge is universal (a 2015 Civic alternator R&R is the same
+      // for everyone), so save it globally; other answers stay scoped to the user.
+      const kbScope = resolved.id === "carparts" ? "global" : (userId || "global");
+      kbAdd({ scope: kbScope, kind: "qa", question: lastText, content: text }).catch(() => {});
     }
   } catch (err) {
     console.error(err);
@@ -262,12 +266,23 @@ app.get("/kb/stats", async (_req, res) => {
 // embedded). Body: { userId, title, content, scope? }. scope "global" (default)
 // shares it with everyone; "me" keeps it to the uploading user.
 app.post("/kb/upload", requireAuth, async (req, res) => {
-  const { userId, title, content, scope } = req.body || {};
-  if (!content || !String(content).trim()) return res.status(400).json({ error: "content required" });
+  const { userId, title, content, scope, pdfBase64 } = req.body || {};
   if (!kbEnabled()) return res.status(400).json({ error: "Knowledge base isn't set up on the server yet (needs a Gemini key)." });
+
+  // A PDF arrives base64-encoded; extract its text first. Otherwise use `content`.
+  let text = content;
+  if (pdfBase64) {
+    try {
+      text = await extractPdfText(Buffer.from(pdfBase64, "base64"));
+    } catch (err) {
+      return res.status(400).json({ error: "Couldn't read that PDF: " + err.message });
+    }
+  }
+  if (!text || !String(text).trim()) return res.status(400).json({ error: "No readable text found in that file (a scanned/image-only PDF won't work)." });
+
   const useScope = scope === "me" && userId ? userId : "global";
   try {
-    const { added, skipped } = await kbIngestDoc({ scope: useScope, title: String(title || "").slice(0, 200), text: String(content).slice(0, 200000) });
+    const { added, skipped } = await kbIngestDoc({ scope: useScope, title: String(title || "").slice(0, 200), text: String(text).slice(0, 400000) });
     res.json({ ok: true, added, skipped });
   } catch (err) {
     res.status(500).json({ error: err.message });

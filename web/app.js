@@ -789,18 +789,29 @@
   }
 
   // ---- Document upload (learn into the knowledge base) ----
+  function arrayBufferToBase64(buf) {
+    const bytes = new Uint8Array(buf); let bin = ""; const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    return btoa(bin);
+  }
   async function uploadDoc(file) {
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) { addMessage("system", "That file's a bit large (keep it under ~2 MB of text). Try splitting it up."); return; }
-    let text = "";
-    try { text = await file.text(); } catch { addMessage("system", "Couldn't read that file."); return; }
-    if (!text.trim()) { addMessage("system", "That file looks empty."); return; }
+    const isPdf = /\.pdf$/i.test(file.name) || file.type === "application/pdf";
+    const maxMB = isPdf ? 10 : 2;
+    if (file.size > maxMB * 1024 * 1024) { addMessage("system", `That file's too big (max ${maxMB} MB). Try splitting it.`); return; }
     const note = addMessage("system", `Learning “${file.name}”…`);
+    let body;
     try {
-      const res = await fetch(api() + "/kb/upload", {
-        method: "POST", headers: authHeaders(true),
-        body: JSON.stringify({ userId: settings.userId, title: file.name, content: text }),
-      });
+      if (isPdf) {
+        body = { userId: settings.userId, title: file.name, pdfBase64: arrayBufferToBase64(await file.arrayBuffer()) };
+      } else {
+        const text = await file.text();
+        if (!text.trim()) { note.textContent = "That file looks empty."; return; }
+        body = { userId: settings.userId, title: file.name, content: text };
+      }
+    } catch { note.textContent = "Couldn't read that file."; return; }
+    try {
+      const res = await fetch(api() + "/kb/upload", { method: "POST", headers: authHeaders(true), body: JSON.stringify(body) });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         note.textContent = `Learned “${file.name}” — added ${data.added} section${data.added === 1 ? "" : "s"} to Tracy's knowledge` +
