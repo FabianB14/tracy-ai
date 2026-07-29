@@ -25,6 +25,25 @@ makes is rerouted.
 > doesn't generate images), so it keeps using the user's Gemini key. Only the
 > text mechanic chat moves to Tracy. Nothing to do there.
 
+## Cost model — hybrid (keeps bring-your-own-key)
+
+PartOut users already add their own Gemini key (the 🔑 button). This integration
+**keeps that** — it doesn't move the mechanic's cost onto your Tracy account:
+
+- The drop-in automatically forwards the user's Gemini key (`po_api_key`) to
+  Tracy as an `X-Gemini-Key` header.
+- Tracy answers **Gemini-first on that key**, so the mechanic's generation bills
+  the user, exactly like today.
+- Tracy falls back to **her own Claude** only when Gemini can't (no key present,
+  or a Gemini error) — so you pay only for the rare miss where a user has no key.
+- Every fresh answer is saved to **shared memory**, so repeats come back with no
+  AI call at all — free for everyone, no matter whose key first learned it.
+
+Shared memory still works across different users' keys, because the embedding
+vectors that power the memory depend only on the model (`text-embedding-004`),
+not on whose key produced them. (Embeddings run on the **server's**
+`GEMINI_API_KEY`, which Tracy needs anyway — see below.)
+
 ---
 
 ## What "Tracy" is here
@@ -92,6 +111,7 @@ sensible; set these only if you need to.
 | `tracy_base`  | `https://tracy-ai.onrender.com`  | Tracy backend URL (point at a staging server if you want). |
 | `tracy_user`  | auto-generated `partout-xxxx`    | Stable per-device id for attribution. Set it to a known worker id to unify a person across devices. |
 | `tracy_key`   | *(none)*                         | Tracy access key — only needed if the backend has the access gate on (`AUTH_SECRET`). Redeemed once for a token. |
+| `po_api_key`  | *(PartOut's 🔑 button)*          | The user's Gemini key. Already set by PartOut; the drop-in forwards it to Tracy automatically so the mechanic bills the user's key. |
 
 ---
 

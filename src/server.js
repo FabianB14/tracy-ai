@@ -111,6 +111,12 @@ app.post("/chat", requireAuth, async (req, res) => {
     const byok = (req.headers["x-anthropic-key"] || "").trim();
     const client = byok.startsWith("sk-ant-") ? new Anthropic({ apiKey: byok }) : anthropic;
 
+    // Bring-your-own Gemini key: an app (e.g. PartOut, where each user has their
+    // own Gemini key) can send X-Gemini-Key so Gemini generation bills THAT
+    // account. Embeddings/memory stay on the server key; only generation moves.
+    const byoGemini = (req.headers["x-gemini-key"] || "").trim();
+    const geminiUsable = geminiConfigured() || Boolean(byoGemini);
+
     // Resolve where Tracy is: core identity + surface prompt + this surface's tools.
     const resolved = resolveSurface(surface);
     const toolkit = buildToolkit(resolved.toolSets, { userId, surface: resolved.id, tz });
@@ -148,17 +154,25 @@ app.post("/chat", requireAuth, async (req, res) => {
     // Confidence gate: if Tracy clearly already knows this, answer from her own
     // knowledge instead of calling Claude. A very strong match reuses the saved
     // answer verbatim (no model call at all); a strong match uses the cheap
-    // model grounded in that knowledge; otherwise it falls through to the full
-    // Claude path below. Thresholds are tunable via env.
+    // (Gemini) model grounded in that knowledge; otherwise it falls through to
+    // the full Claude path below. Thresholds are tunable via env.
     const topScore = kbHits.length ? kbHits[0].score : 0;
     const DIRECT_T = Number(process.env.KB_DIRECT_THRESHOLD || 0.95);
     const CHEAP_T = Number(process.env.KB_ANSWER_THRESHOLD || 0.88);
+    // Gemini gets the user's own key (if they sent one) so generation bills them.
+    const geminiOpts = { apiKey: byoGemini || undefined, history: messages };
     if (kbEnabled() && topScore >= DIRECT_T) {
       text = kbHits[0].content;
       answerPath = "kb-direct";
-    } else if (kbEnabled() && topScore >= CHEAP_T && geminiConfigured()) {
-      const g = await geminiChat(systemPrompt, lastText);
+    } else if (kbEnabled() && topScore >= CHEAP_T && geminiUsable) {
+      const g = await geminiChat(systemPrompt, lastText, geminiOpts);
       if (g) { text = g; answerPath = "kb-gemini"; }
+    } else if (resolved.id === "carparts" && geminiUsable) {
+      // PartOut hybrid: on a memory miss, answer with Gemini first (the user's
+      // key) and only fall back to Claude if Gemini can't. The answer is saved
+      // to shared memory below, so the next person gets it without any AI call.
+      const g = await geminiChat(systemPrompt, lastText, geminiOpts);
+      if (g) { text = g; answerPath = "gemini-first"; }
     }
 
     // Full Claude path (with tools) — only when the gate didn't answer.
@@ -253,8 +267,10 @@ app.post("/chat", requireAuth, async (req, res) => {
     // ONLY for fresh general answers from the model path. Skip anything backed by
     // a live/dynamic tool (stats, web search, etc.), errors, trivially short
     // replies, and answers that already came FROM the knowledge base. Fire-and-
-    // forget so it never delays the response.
-    if (answerPath === "model" && kbEnabled() && lastText && text && text.length >= 40 &&
+    // forget so it never delays the response. Both the full Claude path and the
+    // PartOut Gemini-first path produce fresh answers worth remembering.
+    if ((answerPath === "model" || answerPath === "gemini-first") &&
+        kbEnabled() && lastText && text && text.length >= 40 &&
         !toolsUsed.some((t) => DYNAMIC_TOOLS.has(t))) {
       // Car-repair knowledge is universal (a 2015 Civic alternator R&R is the same
       // for everyone), so save it globally; other answers stay scoped to the user.

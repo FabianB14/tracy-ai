@@ -79,6 +79,12 @@
   const getVehicle = global.getVehicle || (() => localStorage.getItem('po_vehicle') || '');
   const toB64 = global.dataUrlToBase64 || ((u) => u.slice(u.indexOf(',') + 1));
 
+  // The user's own Gemini key (PartOut's 🔑 button stores it as 'po_api_key').
+  // Passed through to Tracy so the mechanic's generation bills the user's key —
+  // NOT Tracy's account. Tracy uses it Gemini-first and only falls back to her
+  // own Claude when Gemini can't. Blank = Tracy uses her shared key.
+  const geminiKey = () => (localStorage.getItem('po_api_key') || '').trim();
+
   // Turn PartOut's chat history ({role:'user'|'model', text, img}) into Tracy
   // `/chat` messages. User turns may carry a photo as an image content block;
   // assistant turns are sent as plain text (any generated diagram image is
@@ -130,11 +136,16 @@
   // reply text (a string), same as the original mechanicChat.
   async function chat(history) {
     const messages = toMessages(history, getVehicle());
+    const gk = geminiKey();
     let res;
     try {
       res = await fetch(base() + '/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(await authHeader()) },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(gk ? { 'X-Gemini-Key': gk } : {}),
+          ...(await authHeader()),
+        },
         body: JSON.stringify({ surface: 'carparts', userId: userId(), tz: tz(), messages }),
       });
     } catch {
