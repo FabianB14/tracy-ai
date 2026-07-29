@@ -99,9 +99,22 @@ app.post("/chat", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "messages array required" });
     }
 
+    // Sanitize: Anthropic's API rejects turns with empty content (e.g. an app
+    // whose assistant turn was an image with no text). Drop them rather than
+    // 500 — consecutive same-role turns are fine with the API.
+    const cleanMessages = messages.filter((m) => {
+      if (!m) return false;
+      if (typeof m.content === "string") return m.content.trim().length > 0;
+      if (Array.isArray(m.content)) return m.content.length > 0;
+      return Boolean(m.content);
+    });
+    if (cleanMessages.length === 0) {
+      return res.status(400).json({ error: "messages array required" });
+    }
+
     // The current question (last user turn), used for knowledge retrieval + the
     // learn-from-answer loop below.
-    const lastUserMsg = [...messages].reverse().find((m) => m && m.role === "user");
+    const lastUserMsg = [...cleanMessages].reverse().find((m) => m && m.role === "user");
     const lastText = lastUserMsg ? messageText(lastUserMsg.content) : "";
 
     // Bring-your-own-key: a team member can supply their own Anthropic API key
@@ -160,7 +173,7 @@ app.post("/chat", requireAuth, async (req, res) => {
     const DIRECT_T = Number(process.env.KB_DIRECT_THRESHOLD || 0.95);
     const CHEAP_T = Number(process.env.KB_ANSWER_THRESHOLD || 0.88);
     // Gemini gets the user's own key (if they sent one) so generation bills them.
-    const geminiOpts = { apiKey: byoGemini || undefined, history: messages };
+    const geminiOpts = { apiKey: byoGemini || undefined, history: cleanMessages };
     if (kbEnabled() && topScore >= DIRECT_T) {
       text = kbHits[0].content;
       answerPath = "kb-direct";
@@ -177,7 +190,7 @@ app.post("/chat", requireAuth, async (req, res) => {
 
     // Full Claude path (with tools) — only when the gate didn't answer.
     if (text === null) {
-    const convo = [...messages];
+    const convo = [...cleanMessages];
     let response;
 
     // Tool-use loop: keep going until Tracy answers in plain text.

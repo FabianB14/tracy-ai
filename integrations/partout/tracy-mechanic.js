@@ -102,6 +102,11 @@
         });
         return { role, content: blocks };
       }
+      // An assistant turn can be a generated diagram with no text at all —
+      // Anthropic's API rejects empty assistant content, so describe it instead.
+      if (role === 'assistant' && !m.text) {
+        return { role, content: '(shared a diagram image)' };
+      }
       return { role, content: m.text || '' };
     });
 
