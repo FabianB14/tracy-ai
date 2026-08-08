@@ -58,6 +58,8 @@ function ensureSchema() {
         last_used_at TIMESTAMPTZ,
         use_count    INTEGER NOT NULL DEFAULT 0
       );
+      ALTER TABLE access_keys ADD COLUMN IF NOT EXISTS user_id TEXT;
+      ALTER TABLE access_keys ADD COLUMN IF NOT EXISTS role    TEXT;
     `).catch((err) => { schemaReady = null; throw err; });
   }
   return schemaReady;
@@ -97,11 +99,36 @@ async function validateKey(rawKey) {
 }
 
 // Generate/store a managed key (DB). Returns true if stored, false if no DB.
-export async function createKey(label, rawKey) {
+// userId + role bind the key to a PERSON — that binding is Tracy's verified
+// identity (used by the vault; the client-side "User ID" field is unverified).
+export async function createKey(label, rawKey, userId = null, role = null) {
   if (!dbEnabled()) return false;
   await ensureSchema();
-  await query("INSERT INTO access_keys (label, key_hash) VALUES ($1, $2)", [label || null, hashKey(rawKey)]);
+  await query(
+    "INSERT INTO access_keys (label, key_hash, user_id, role) VALUES ($1, $2, $3, $4)",
+    [label || null, hashKey(rawKey), userId ? String(userId).trim().toLowerCase() : null, role ? String(role).trim().toLowerCase() : null],
+  );
   return true;
+}
+
+// ---- Verified identity ----
+// Map an authenticated key hash to the person it was issued to. Cached briefly
+// (like validKeyHashes) so /chat doesn't hit the DB on every message.
+let idCache = { ts: 0, map: new Map() };
+async function identityForKeyHash(kh) {
+  if (!dbEnabled()) return null;
+  const now = Date.now();
+  if (now - idCache.ts > 60000) {
+    try {
+      await ensureSchema();
+      const { rows } = await query("SELECT key_hash, user_id, role FROM access_keys WHERE active AND user_id IS NOT NULL");
+      idCache = { ts: now, map: new Map(rows.map((r) => [r.key_hash, { userId: r.user_id, role: r.role || null }])) };
+    } catch (err) {
+      console.error("identity read failed:", err.message);
+      return idCache.map.get(kh) || null; // stale beats broken
+    }
+  }
+  return idCache.map.get(kh) || null;
 }
 
 // ---- Express glue ----
@@ -117,13 +144,16 @@ export async function handleAuth(req, res) {
 }
 
 // Middleware protecting /chat. Open when auth is not configured.
+// On success, attaches req.authUser = { userId, role } when the key was issued
+// to a person (env ACCESS_KEYS and unlabeled keys carry no identity → null).
 export async function requireAuth(req, res, next) {
-  if (!authEnabled()) return next();
+  if (!authEnabled()) { req.authUser = null; return next(); }
   const hdr = req.headers.authorization || "";
   const token = hdr.startsWith("Bearer ") ? hdr.slice(7) : null;
   const data = verifyToken(token);
   if (!data) return res.status(401).json({ error: "Access key required.", authRequired: true });
   const set = await validKeyHashes();
   if (!set.has(data.kh)) return res.status(401).json({ error: "Access has been revoked.", authRequired: true });
+  req.authUser = await identityForKeyHash(data.kh);
   next();
 }

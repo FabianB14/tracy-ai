@@ -12,6 +12,7 @@
 // calls to the BabyResell API. (Per project plan: that wiring comes later.)
 
 import { addMemory } from "./memory.js";
+import { vaultEnabled, storeSecret, listSecrets, getSecret, deleteSecret } from "./vault.js";
 import { babyresellConfigured, getStats, getActivity, getReportStats, getOpenReports, getShippingBacklog } from "./babyresell.js";
 import { geminiConfigured, webResearch, analyzeMedia } from "./gemini.js";
 import { getSubscription, setSubscription } from "./subscriptions.js";
@@ -174,6 +175,116 @@ const notifyHandlers = {
 // Fold notification tools into the always-on core set.
 coreSchemas.push(...notifySchemas);
 Object.assign(coreHandlers, notifyHandlers);
+
+// ---------------------------------------------------------------------------
+// Vault — pass secrets between verified people (folded into core below)
+// ---------------------------------------------------------------------------
+// Identity here is the ACCESS KEY the person authenticated with (bound to a
+// user id + role at generation) — never the client's editable User ID field.
+// No verified identity → every vault tool refuses. Secrets are encrypted at
+// rest; only the designated recipient can retrieve a value.
+
+const NO_IDENTITY =
+  "No verified identity on this session. Vault access needs a personal access key " +
+  "(one generated with a user id — ask the admin to run scripts/genkey.js with --user). " +
+  "The User ID in Settings is not verified and can't unlock secrets.";
+
+const vaultSchemas = [
+  {
+    name: "vault_store",
+    description:
+      "Securely save a secret (API key, token, password, credential) for a SPECIFIC person to pick up. " +
+      "It is encrypted and only the named recipient can retrieve it — verified by their access key, not " +
+      "their typed User ID. Use when someone asks you to pass a key/token/secret to a teammate. " +
+      "Confirm the recipient's user id before storing if there's any ambiguity.",
+    input_schema: {
+      type: "object",
+      properties: {
+        recipient: { type: "string", description: "User id of the person who may retrieve it (as bound to their access key), e.g. 'josh'." },
+        label: { type: "string", description: "Short name for the secret, e.g. 'Stripe live key' — the recipient asks for it by this." },
+        secret: { type: "string", description: "The secret value itself." },
+        one_time: { type: "boolean", description: "If true, the secret self-destructs after the recipient reads it once. Default false." },
+        expires_days: { type: "number", description: "Optional: delete automatically after this many days." },
+      },
+      required: ["recipient", "label", "secret"],
+    },
+  },
+  {
+    name: "vault_list",
+    description:
+      "List vault items the current person can see: secrets waiting FOR them (retrievable) and secrets " +
+      "they sent to others (visible, not readable back). Metadata only — never values.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "vault_get",
+    description:
+      "Retrieve the VALUE of a secret addressed to the current person, by label or id. Only works for the " +
+      "designated recipient. Present the value clearly, once — don't repeat it or store it anywhere else.",
+    input_schema: {
+      type: "object",
+      properties: {
+        ref: { type: "string", description: "The secret's label (e.g. 'Stripe live key') or numeric id." },
+      },
+      required: ["ref"],
+    },
+  },
+  {
+    name: "vault_delete",
+    description: "Delete a vault item by id. Allowed for its sender or its recipient.",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "number", description: "The vault item id (from vault_list)." } },
+      required: ["id"],
+    },
+  },
+];
+
+const vaultHandlers = {
+  async vault_store({ recipient, label, secret, one_time, expires_days }, context = {}) {
+    if (!vaultEnabled()) return { error: "The vault isn't set up on this server yet (VAULT_SECRET is unset)." };
+    if (!context.authUser?.userId) return { error: NO_IDENTITY };
+    try {
+      const r = await storeSecret({
+        sender: context.authUser.userId, recipient, label, secret,
+        oneTime: one_time, expiresDays: expires_days,
+      });
+      return { status: "stored", id: r.id, label: r.label, recipient: r.recipient,
+               note: `Only '${r.recipient}' (verified by their access key) can retrieve this.` };
+    } catch (err) { return { error: String(err.message || err) }; }
+  },
+  async vault_list(_input, context = {}) {
+    if (!vaultEnabled()) return { error: "The vault isn't set up on this server yet (VAULT_SECRET is unset)." };
+    if (!context.authUser?.userId) return { error: NO_IDENTITY };
+    try { return { items: await listSecrets(context.authUser.userId) }; }
+    catch (err) { return { error: String(err.message || err) }; }
+  },
+  async vault_get({ ref }, context = {}) {
+    if (!vaultEnabled()) return { error: "The vault isn't set up on this server yet (VAULT_SECRET is unset)." };
+    if (!context.authUser?.userId) return { error: NO_IDENTITY };
+    try {
+      const r = await getSecret(context.authUser.userId, ref);
+      return { label: r.label, from: r.from, secret: r.secret,
+               note: r.oneTime ? "This was one-time — it has now been deleted from the vault." : undefined };
+    } catch (err) {
+      if (String(err.message) === "not-found") {
+        return { error: "No secret by that name/id is addressed to you (it may have expired, been one-time-read already, or be meant for someone else)." };
+      }
+      return { error: String(err.message || err) };
+    }
+  },
+  async vault_delete({ id }, context = {}) {
+    if (!vaultEnabled()) return { error: "The vault isn't set up on this server yet (VAULT_SECRET is unset)." };
+    if (!context.authUser?.userId) return { error: NO_IDENTITY };
+    try {
+      const ok = await deleteSecret(context.authUser.userId, id);
+      return ok ? { status: "deleted", id } : { error: "Nothing deleted — that id doesn't exist or isn't yours to delete." };
+    } catch (err) { return { error: String(err.message || err) }; }
+  },
+};
+
+coreSchemas.push(...vaultSchemas);
+Object.assign(coreHandlers, vaultHandlers);
 
 // ---------------------------------------------------------------------------
 // BabyResell tool set
