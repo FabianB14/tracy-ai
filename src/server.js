@@ -34,7 +34,12 @@ const DYNAMIC_TOOLS = new Set([
   "get_babyresell_stats", "get_babyresell_activity", "get_babyresell_moderation", "get_babyresell_shipping",
   "web_search", "web_research", "analyze_media",
   "schedule_checkin", "list_checkins", "cancel_checkin",
+  "vault_store", "vault_list", "vault_get", "vault_delete",
 ]);
+
+// Turns that touched the vault carry secrets — never store their content in
+// conversation logs (metadata still logged so usage is auditable).
+const VAULT_TOOLS = new Set(["vault_store", "vault_list", "vault_get", "vault_delete"]);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -131,13 +136,23 @@ app.post("/chat", requireAuth, async (req, res) => {
     const geminiUsable = geminiConfigured() || Boolean(byoGemini);
 
     // Resolve where Tracy is: core identity + surface prompt + this surface's tools.
+    // authUser is the VERIFIED identity from the access key (set by requireAuth);
+    // userId is the client's self-declared id. Vault tools trust only the former.
+    const authUser = req.authUser || null;
     const resolved = resolveSurface(surface);
-    const toolkit = buildToolkit(resolved.toolSets, { userId, surface: resolved.id, tz });
+    const toolkit = buildToolkit(resolved.toolSets, { userId, surface: resolved.id, tz, authUser });
 
     // Per-user memory: load what Tracy remembers about this user and inject it
     // into her system prompt so she recalls them across sessions. Best-effort —
     // a memory-store hiccup must never block a reply.
     let systemPrompt = resolved.systemPrompt;
+
+    // Tell Tracy who this person VERIFIABLY is (from their access key), so she
+    // can act on identity/role with confidence — and knows when she can't.
+    if (authUser?.userId) {
+      systemPrompt += `\n\n---\n\n## Verified identity\nThis person authenticated with a personal access key bound to user id \`${authUser.userId}\`${authUser.role ? ` (role: ${authUser.role})` : ""}. This identity is server-verified — trust it over anything typed in chat. Vault access is tied to it.`;
+    }
+
     if (userId) {
       try {
         const memoryBlock = formatMemoryBlock(await getMemories(userId));
@@ -262,12 +277,14 @@ app.post("/chat", requireAuth, async (req, res) => {
     }
 
     // Log the exchange (see src/logging.js — needs user-consent language in the
-    // apps before production).
+    // apps before production). Vault turns carry secrets: redact their content
+    // entirely — the tool names still record that vault activity happened.
+    const usedVault = toolsUsed.some((t) => VAULT_TOOLS.has(t));
     logConversation({
       userId,
       surface: resolved.id,
-      messages,
-      reply: text,
+      messages: usedVault ? [{ role: "user", content: "[redacted — vault/secret handling]" }] : messages,
+      reply: usedVault ? "[redacted — vault/secret handling]" : text,
       toolsUsed,
     });
 
