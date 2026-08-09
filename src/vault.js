@@ -96,7 +96,10 @@ const norm = (s) => String(s || "").trim().toLowerCase();
 const expired = (row) => row.expires_at && new Date(row.expires_at).getTime() < Date.now();
 
 // Store a secret for a designated recipient. Returns { id, label, recipient }.
-export async function storeSecret({ sender, recipient, label, secret, oneTime = false, expiresDays = null }) {
+// oneTime defaults to TRUE: a handed-off key should not outlive its handoff —
+// it self-destructs when the recipient retrieves it. Senders opt IN to keeping
+// a secret retrievable (e.g. a shared credential several people will need).
+export async function storeSecret({ sender, recipient, label, secret, oneTime = true, expiresDays = null }) {
   if (!vaultEnabled()) throw new Error("vault-not-configured");
   if (!sender || !recipient || !label || !secret) throw new Error("sender, recipient, label and secret are all required");
   if (String(secret).length > MAX_SECRET_LEN) throw new Error(`secret too long (max ${MAX_SECRET_LEN} chars)`);

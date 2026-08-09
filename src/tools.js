@@ -203,7 +203,7 @@ const vaultSchemas = [
         recipient: { type: "string", description: "User id of the person who may retrieve it (as bound to their access key), e.g. 'josh'." },
         label: { type: "string", description: "Short name for the secret, e.g. 'Stripe live key' — the recipient asks for it by this." },
         secret: { type: "string", description: "The secret value itself." },
-        one_time: { type: "boolean", description: "If true, the secret self-destructs after the recipient reads it once. Default false." },
+        one_time: { type: "boolean", description: "Default TRUE: the secret self-destructs after the recipient reads it once (right for key/token handoffs). Pass false ONLY if the sender explicitly wants it retrievable multiple times." },
         expires_days: { type: "number", description: "Optional: delete automatically after this many days." },
       },
       required: ["recipient", "label", "secret"],
@@ -250,7 +250,9 @@ const vaultHandlers = {
         oneTime: one_time, expiresDays: expires_days,
       });
       return { status: "stored", id: r.id, label: r.label, recipient: r.recipient,
-               note: `Only '${r.recipient}' (verified by their access key) can retrieve this.` };
+               oneTime: one_time !== false,
+               note: `Only '${r.recipient}' (verified by their access key) can retrieve this.` +
+                     (one_time !== false ? " It will self-destruct when they read it — tell the sender that." : "") };
     } catch (err) { return { error: String(err.message || err) }; }
   },
   async vault_list(_input, context = {}) {
