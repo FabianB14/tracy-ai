@@ -592,8 +592,52 @@
     updateInstallRow();
     updatePushRow();
     loadKbStats();
+    loadIdentity();
     showBuild();
     modal.hidden = false;
+  }
+
+  // ---- Identity & access (Settings) ----
+  // Shows who this browser is verifiably signed in as (from the access key),
+  // and lets the person enter a (new) personal key without waiting for the
+  // gate — the gate only appears when there's NO valid session, so switching
+  // from an old shared key to a personal one happens here.
+  async function loadIdentity() {
+    const el = $("cfg-identity"); if (!el) return;
+    el.textContent = "checking…";
+    try {
+      const res = await fetch(api() + "/whoami", { headers: authHeaders(false) });
+      if (res.status === 401) { el.textContent = "Not signed in — enter your access key below."; return; }
+      const d = await res.json();
+      if (!d.authRequired) { el.textContent = "Access gate is off — no sign-in needed."; return; }
+      el.textContent = d.userId
+        ? `Signed in as ${d.userId}${d.role ? ` (${d.role})` : ""} ✓`
+        : "Signed in with a key that isn't tied to a person — the vault needs a personal key. Enter yours below.";
+    } catch { el.textContent = "Couldn't reach the server."; }
+  }
+  async function saveAccessKey() {
+    const input = $("cfg-accesskey"), status = $("cfg-accesskey-status");
+    const key = (input.value || "").trim();
+    if (!key) { status.textContent = "Enter a key first."; return; }
+    const btn = $("cfg-accesskey-save"); btn.disabled = true;
+    status.textContent = "Checking…";
+    try {
+      const res = await fetch(api() + "/auth", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (res.ok && d.token) {
+        setToken(d.token); input.value = "";
+        status.textContent = "Signed in ✓";
+        hideGate(); loadIdentity();
+      } else if (res.ok && d.authRequired === false) {
+        status.textContent = "The access gate is off on this server — no key needed.";
+      } else {
+        status.textContent = d.error || "That access key isn't valid.";
+      }
+    } catch { status.textContent = `Couldn't reach the server at ${api()}.`; }
+    finally { btn.disabled = false; }
   }
   function populateVoicePicker() {
     const sel = $("cfg-voice"); if (!sel) return;
@@ -854,6 +898,8 @@
 
   $("gate-enter").addEventListener("click", submitKey);
   $("gate-key").addEventListener("keydown", (e) => { if (e.key === "Enter") submitKey(); });
+  $("cfg-accesskey-save").addEventListener("click", saveAccessKey);
+  $("cfg-accesskey").addEventListener("keydown", (e) => { if (e.key === "Enter") saveAccessKey(); });
 
   // Prime iOS text-to-speech on the first interaction anywhere on the page.
   ["pointerdown", "keydown", "touchend"].forEach((ev) =>

@@ -321,6 +321,17 @@ app.post("/chat", requireAuth, async (req, res) => {
 
 app.get("/health", (_req, res) => res.json({ ok: true, assistant: "Tracy", authRequired: authEnabled() }));
 
+// GET /whoami — who this browser's session is verifiably signed in as (from the
+// access key's identity binding). Lets Settings show "signed in as fabian (ceo)"
+// and prompt for a personal key when there's no identity.
+app.get("/whoami", requireAuth, (req, res) => {
+  res.json({
+    authRequired: authEnabled(),
+    userId: req.authUser?.userId || null,
+    role: req.authUser?.role || null,
+  });
+});
+
 // GET /kb/stats — how often Tracy answers from her own knowledge vs. asking
 // Claude (aggregate counts only; no message content).
 app.get("/kb/stats", async (_req, res) => {

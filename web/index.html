@@ -116,6 +116,23 @@
         <small class="hint">Your identity to Tracy — keys your memory, check-ins, and admin access. Set it to the same value on every browser/device you use (e.g. an ID your admin assigned) so you stay recognized everywhere.</small>
       </label>
 
+      <div class="cfg-section">Identity &amp; access</div>
+      <div class="install-row">
+        <div class="install-text">
+          <strong>Verified identity</strong>
+          <span id="cfg-identity" class="hint">—</span>
+        </div>
+      </div>
+      <label>Access key
+        <input id="cfg-accesskey" type="password" autocomplete="off" spellcheck="false"
+               placeholder="tracy-xxxx-xxxx-xxxx" />
+        <small class="hint">Your personal access key identifies you to Tracy (it's what unlocks the vault). Enter it here to sign this browser in as you — or to switch from an old shared key to your personal one.</small>
+      </label>
+      <div class="modal-actions" style="justify-content:flex-start;gap:8px">
+        <button id="cfg-accesskey-save" class="ghost-btn" type="button">Sign in with this key</button>
+      </div>
+      <small id="cfg-accesskey-status" class="hint"></small>
+
       <div class="cfg-section">App &amp; notifications</div>
       <div class="install-row">
         <div class="install-text">
