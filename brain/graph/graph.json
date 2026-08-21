@@ -1,9 +1,9 @@
 {
-  "generated": "2026-08-21T20:01:42.304Z",
+  "generated": "2026-08-21T20:06:13.912Z",
   "counts": {
-    "nodes": 3,
-    "edges": 1,
-    "dangling": 1
+    "nodes": 6,
+    "edges": 13,
+    "dangling": 0
   },
   "nodes": [
     {
@@ -40,6 +40,17 @@
       "file": "concepts/c-partout-junkyard-partnerships.md"
     },
     {
+      "id": "e-company-interverse",
+      "title": "Interverse Corp (the ecosystem)",
+      "kind": "entity",
+      "type": "company",
+      "status": null,
+      "confidence": 1,
+      "tracy_ready": true,
+      "tags": [],
+      "file": "entities/e-company-interverse.md"
+    },
+    {
       "id": "e-product-babyresell",
       "title": "BabyResell",
       "kind": "entity",
@@ -49,15 +60,83 @@
       "tracy_ready": true,
       "tags": [],
       "file": "entities/e-product-babyresell.md"
+    },
+    {
+      "id": "e-product-partout",
+      "title": "PartOut",
+      "kind": "entity",
+      "type": "product",
+      "status": null,
+      "confidence": 1,
+      "tracy_ready": true,
+      "tags": [],
+      "file": "entities/e-product-partout.md"
+    },
+    {
+      "id": "e-product-tracy",
+      "title": "Tracy (Interverse AI assistant)",
+      "kind": "entity",
+      "type": "product",
+      "status": null,
+      "confidence": 1,
+      "tracy_ready": true,
+      "tags": [],
+      "file": "entities/e-product-tracy.md"
     }
   ],
   "edges": [
     {
       "source": "c-babyresell-ai-listing-writer",
       "target": "e-product-babyresell"
+    },
+    {
+      "source": "c-partout-junkyard-partnerships",
+      "target": "e-product-partout"
+    },
+    {
+      "source": "e-company-interverse",
+      "target": "e-product-babyresell"
+    },
+    {
+      "source": "e-company-interverse",
+      "target": "e-product-partout"
+    },
+    {
+      "source": "e-company-interverse",
+      "target": "e-product-tracy"
+    },
+    {
+      "source": "e-product-babyresell",
+      "target": "e-company-interverse"
+    },
+    {
+      "source": "e-product-partout",
+      "target": "e-company-interverse"
+    },
+    {
+      "source": "e-product-partout",
+      "target": "e-product-tracy"
+    },
+    {
+      "source": "e-product-partout",
+      "target": "e-product-babyresell"
+    },
+    {
+      "source": "e-product-partout",
+      "target": "c-partout-junkyard-partnerships"
+    },
+    {
+      "source": "e-product-tracy",
+      "target": "e-company-interverse"
+    },
+    {
+      "source": "e-product-tracy",
+      "target": "e-product-babyresell"
+    },
+    {
+      "source": "e-product-tracy",
+      "target": "e-product-partout"
     }
   ],
-  "dangling": [
-    "c-partout-junkyard-partnerships -> e-product-partout"
-  ]
+  "dangling": []
 }

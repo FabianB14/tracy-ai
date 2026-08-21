@@ -1,7 +1,7 @@
 # Brain Index
 
 Generated file. The daily loop rewrites this completely at the end of every run.
-Last regenerated: 2026-08-21
+Last regenerated: 2026-08-21 (entity seeding pass)
 
 ## Concepts by status
 
@@ -23,8 +23,13 @@ Last regenerated: 2026-08-21
 
 ## Entities by type
 
+### company
+- [[e-company-interverse]] Interverse Corp (the ecosystem) (confidence 1.0, tracy_ready: true)
+
 ### product
 - [[e-product-babyresell]] BabyResell (confidence 1.0, tracy_ready: true)
+- [[e-product-partout]] PartOut (confidence 1.0, tracy_ready: true)
+- [[e-product-tracy]] Tracy (Interverse AI assistant) (confidence 1.0, tracy_ready: true)
 
 ## Needs Fabian
 
@@ -33,10 +38,9 @@ Last regenerated: 2026-08-21
   of 1,337 with a real one.
 - Junkyard willingness to pay is unvalidated. 3 to 5 short yard conversations
   (self-service or small indie) would answer more than any web research pass.
-- [[c-partout-junkyard-partnerships]] links to a PartOut entity that does not
-  exist yet (e-product-partout, currently a dangling link). A first-party PartOut
-  entity like the BabyResell one would anchor every PartOut concept. Fabian can
-  state it as ground truth.
+- INTERCESSION is named in the operating manual as a first-party subject but has
+  no concept or entity. Drop a raw note saying what it is and the loop will take
+  it from there.
 
 ## Orphans
 
