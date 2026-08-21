@@ -16,7 +16,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { fileURLToPath } from "url";
 import path from "path";
 import { dbEnabled, query } from "./db.js";
-import { embed, embeddingsConfigured } from "./embeddings.js";
+import { embed, embeddingsConfigured, embedModelId } from "./embeddings.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIR = path.join(__dirname, "..", "logs");
@@ -130,6 +130,42 @@ export async function kbIngestDoc({ scope = "global", title = "", text = "" }) {
     ok ? added++ : skipped++;
   }
   return { added, skipped };
+}
+
+// Embedding-model migration. Vectors from different models are NOT comparable:
+// after Google retires an embedding model and the default here changes (they
+// retired text-embedding-004 and gemini-embedding-001 within six months), every
+// stored vector must be regenerated with the new model or retrieval scores
+// become meaningless. This runs at server boot: it compares the model marker
+// stored next to the data with the configured model, and re-embeds every
+// knowledge row when they differ. Returns { model, changed, reembedded }.
+export async function kbReembedIfModelChanged() {
+  const model = embedModelId();
+  if (!dbEnabled() || !embeddingsConfigured()) return { model, changed: false, reembedded: 0 };
+  await ensureSchema();
+  await query(`CREATE TABLE IF NOT EXISTS kb_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+  const { rows } = await query("SELECT value FROM kb_meta WHERE key = 'embed_model'");
+  const stored = rows[0]?.value || null;
+  if (stored === model) return { model, changed: false, reembedded: 0 };
+
+  let reembedded = 0, failed = 0;
+  const { rows: all } = await query("SELECT id, question, content FROM knowledge ORDER BY id");
+  for (const r of all) {
+    const vec = await embed(r.question || r.content); // same source text kbAdd embeds
+    if (vec) {
+      await query("UPDATE knowledge SET embedding = $1 WHERE id = $2", [JSON.stringify(vec), r.id]);
+      reembedded++;
+    } else {
+      failed++;
+    }
+  }
+  // Record the marker only if nothing failed, so a partial run retries next boot.
+  if (!failed) {
+    await query(
+      `INSERT INTO kb_meta (key, value) VALUES ('embed_model', $1)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [model]);
+  }
+  return { model, changed: true, reembedded, failed, total: all.length };
 }
 
 // Format retrieved knowledge as a system-prompt block. "" when there's nothing.

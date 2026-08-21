@@ -24,8 +24,8 @@ import { getSubscription, setSubscription, listDigestSubscribers, markSent, loca
 import { buildDigest, knownApps, APPS } from "./digest.js";
 import { sendEmail, emailConfigured } from "./email.js";
 import { pushConfigured, getPublicKey, savePushSub, removePushSub, sendPushToUser } from "./push.js";
-import { kbEnabled, kbSearch, kbAdd, formatKnowledgeBlock, kbIngestDoc } from "./knowledge.js";
-import { brainEnabled, formatBrainBlock, syncBrain } from "./brain.js";
+import { kbEnabled, kbSearch, kbAdd, formatKnowledgeBlock, kbIngestDoc, kbReembedIfModelChanged } from "./knowledge.js";
+import { brainEnabled, formatBrainBlock, syncBrain, resetBrainEmbeddings } from "./brain.js";
 import { extractPdfText } from "./pdf.js";
 import { geminiConfigured, geminiChat } from "./gemini.js";
 import { logAnswer, getAnswerStats } from "./answerlog.js";
@@ -536,9 +536,27 @@ app.post("/tasks/daily", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Tracy is listening on :${PORT}`));
 
-// Sync the brain's entities into Postgres at boot (upsert-only, best-effort),
-// so a plain deploy refreshes the semantic layer. The daily brain loop can
-// also run scripts/brain-sync.js to teach deployed Tracy without a redeploy.
-syncBrain()
-  .then((r) => { if (r.synced) console.log(`brain sync: ${r.synced} upserted, ${r.embedded} embedded (of ${r.total})`); })
-  .catch((err) => console.error("brain sync failed:", err.message));
+// Boot maintenance, best-effort and off the request path:
+// 1. If the embedding model changed (Google retires them regularly), re-embed
+//    every knowledge row and clear brain vectors — cross-model cosine scores
+//    are meaningless, so stored vectors must match the current model.
+// 2. Sync the brain's entities into Postgres (upsert-only) so a plain deploy
+//    refreshes the semantic layer. The daily brain loop can also run
+//    scripts/brain-sync.js to teach deployed Tracy without a redeploy.
+(async () => {
+  try {
+    const mig = await kbReembedIfModelChanged();
+    if (mig.changed) {
+      console.log(`embedding model now ${mig.model}: re-embedded ${mig.reembedded}/${mig.total} knowledge rows${mig.failed ? ` (${mig.failed} failed, will retry next boot)` : ""}`);
+      await resetBrainEmbeddings();
+    }
+  } catch (err) {
+    console.error("embedding migration failed:", err.message);
+  }
+  try {
+    const r = await syncBrain();
+    if (r.synced) console.log(`brain sync: ${r.synced} upserted, ${r.embedded} embedded (of ${r.total})`);
+  } catch (err) {
+    console.error("brain sync failed:", err.message);
+  }
+})();

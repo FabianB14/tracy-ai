@@ -175,6 +175,15 @@ export async function syncBrain({ prune = false } = {}) {
   return { synced, embedded, pruned, total: disk.length };
 }
 
+// Clear stored entity vectors (used when the embedding model changes — the
+// next syncBrain re-embeds everything with the current model).
+export async function resetBrainEmbeddings() {
+  if (!dbEnabled()) return;
+  await ensureSchema();
+  await query("UPDATE brain_entities SET embedding = NULL");
+  rowCache.ts = 0;
+}
+
 let rowCache = { ts: 0, rows: [] };
 async function getDbRows() {
   if (!dbEnabled()) return [];
