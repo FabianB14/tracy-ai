@@ -1,7 +1,7 @@
 ---
 id: c-babyresell-ai-listing-writer
 title: AI listing writer for BabyResell sellers
-status: seed
+status: researching
 priority: normal
 created: 2026-08-21
 updated: 2026-08-21
@@ -25,11 +25,18 @@ Marketplace, which offers nothing like it.
 
 ## Open questions
 
-- What do Mercari, Poshmark, and eBay currently offer for AI-assisted listings,
-  and how good are they?
 - Cheapest viable model for image-to-listing at BabyResell's scale?
 - Does suggested pricing need sold-comp data BabyResell does not have yet?
+- Baby-vertical angle: can recall checks and safety details (car seat expiration)
+  make this better than the generic tools, and is that worth building first?
 
 ## Notes
+
+2026-08-21: First research pass done, confidence 0.7. eBay (magical listing) and
+Mercari already ship photo-to-listing, and third-party tools sell it for every
+major marketplace, so this is table stakes versus the big horizontals. The
+differentiator argument only survives via the baby vertical (safety, recalls)
+or against Facebook Marketplace. See
+research/r-babyresell-ai-listing-writer-2026-08-21.md.
 
 2026-08-21: Seeded as a worked example during brain setup.

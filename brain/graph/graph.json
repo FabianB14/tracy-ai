@@ -1,9 +1,9 @@
 {
-  "generated": "2026-08-21T19:58:33.004Z",
+  "generated": "2026-08-21T20:01:42.304Z",
   "counts": {
-    "nodes": 2,
+    "nodes": 3,
     "edges": 1,
-    "dangling": 0
+    "dangling": 1
   },
   "nodes": [
     {
@@ -11,7 +11,7 @@
       "title": "AI listing writer for BabyResell sellers",
       "kind": "concept",
       "type": null,
-      "status": "seed",
+      "status": "researching",
       "confidence": null,
       "tracy_ready": false,
       "tags": [
@@ -21,6 +21,23 @@
         "conversion"
       ],
       "file": "concepts/c-babyresell-ai-listing-writer.md"
+    },
+    {
+      "id": "c-partout-junkyard-partnerships",
+      "title": "PartOut junkyard partnerships (search layer for salvage yards)",
+      "kind": "concept",
+      "type": null,
+      "status": "researching",
+      "confidence": null,
+      "tracy_ready": false,
+      "tags": [
+        "partout",
+        "partnerships",
+        "b2b",
+        "salvage",
+        "marketplace-supply"
+      ],
+      "file": "concepts/c-partout-junkyard-partnerships.md"
     },
     {
       "id": "e-product-babyresell",
@@ -40,5 +57,7 @@
       "target": "e-product-babyresell"
     }
   ],
-  "dangling": []
+  "dangling": [
+    "c-partout-junkyard-partnerships -> e-product-partout"
+  ]
 }
