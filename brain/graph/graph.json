@@ -1,0 +1,44 @@
+{
+  "generated": "2026-08-21T19:58:33.004Z",
+  "counts": {
+    "nodes": 2,
+    "edges": 1,
+    "dangling": 0
+  },
+  "nodes": [
+    {
+      "id": "c-babyresell-ai-listing-writer",
+      "title": "AI listing writer for BabyResell sellers",
+      "kind": "concept",
+      "type": null,
+      "status": "seed",
+      "confidence": null,
+      "tracy_ready": false,
+      "tags": [
+        "babyresell",
+        "ai",
+        "seller-tools",
+        "conversion"
+      ],
+      "file": "concepts/c-babyresell-ai-listing-writer.md"
+    },
+    {
+      "id": "e-product-babyresell",
+      "title": "BabyResell",
+      "kind": "entity",
+      "type": "product",
+      "status": null,
+      "confidence": 1,
+      "tracy_ready": true,
+      "tags": [],
+      "file": "entities/e-product-babyresell.md"
+    }
+  ],
+  "edges": [
+    {
+      "source": "c-babyresell-ai-listing-writer",
+      "target": "e-product-babyresell"
+    }
+  ],
+  "dangling": []
+}

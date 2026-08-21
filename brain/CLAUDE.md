@@ -64,4 +64,4 @@ and trivia does not get `tracy_ready: true`.
 ## Git
 
 At the end of every loop run, if anything changed:
-git add -A && git commit -m "brain: daily loop YYYY-MM-DD (Nin, Nresearched, Npromoted)"
+git add . && git commit -m "brain: daily loop YYYY-MM-DD (Nin, Nresearched, Npromoted)"
