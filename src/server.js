@@ -25,7 +25,7 @@ import { buildDigest, knownApps, APPS } from "./digest.js";
 import { sendEmail, emailConfigured } from "./email.js";
 import { pushConfigured, getPublicKey, savePushSub, removePushSub, sendPushToUser } from "./push.js";
 import { kbEnabled, kbSearch, kbAdd, formatKnowledgeBlock, kbIngestDoc } from "./knowledge.js";
-import { brainEnabled, formatBrainBlock } from "./brain.js";
+import { brainEnabled, formatBrainBlock, syncBrain } from "./brain.js";
 import { extractPdfText } from "./pdf.js";
 import { geminiConfigured, geminiChat } from "./gemini.js";
 import { logAnswer, getAnswerStats } from "./answerlog.js";
@@ -168,7 +168,7 @@ app.post("/chat", requireAuth, async (req, res) => {
     // answers company/product questions from verified first-party knowledge.
     if (brainEnabled() && lastText) {
       try {
-        const brainBlock = formatBrainBlock(lastText);
+        const brainBlock = await formatBrainBlock(lastText);
         if (brainBlock) systemPrompt += "\n\n---\n\n" + brainBlock;
       } catch (err) {
         console.error("brain inject failed:", err.message);
@@ -535,3 +535,10 @@ app.post("/tasks/daily", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Tracy is listening on :${PORT}`));
+
+// Sync the brain's entities into Postgres at boot (upsert-only, best-effort),
+// so a plain deploy refreshes the semantic layer. The daily brain loop can
+// also run scripts/brain-sync.js to teach deployed Tracy without a redeploy.
+syncBrain()
+  .then((r) => { if (r.synced) console.log(`brain sync: ${r.synced} upserted, ${r.embedded} embedded (of ${r.total})`); })
+  .catch((err) => console.error("brain sync failed:", err.message));

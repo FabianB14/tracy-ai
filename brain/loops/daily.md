@@ -49,6 +49,10 @@ the confidence bar in CLAUDE.md rule 2:
   type with confidence and tracy_ready flags, a "needs Fabian" section for anything
   you parked or could not resolve, and a list of orphan files (no links in or out).
 - Run: node graph/build-graph.js
+- Run: node ../scripts/brain-sync.js
+  (Pushes tracy_ready entities into deployed Tracy's database. Prints "skipped"
+  when DATABASE_URL is not set locally; that is fine, the server also syncs at
+  boot.)
 - If anything changed: git add . && git commit -m "brain: daily loop DATE (counts)"
 
 ## 5. Digest

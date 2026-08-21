@@ -62,17 +62,19 @@ Anything you say about your own products is ground truth and skips the research 
 
 ## Plugging into Tracy
 
-Three tiers, do them in order:
+Three tiers, in order:
 
-1. **Now (file read):** Tracy's backend reads ../brain/entities/ off disk. Load
-   frontmatter of all entities at startup, pull full files on demand, filter on
-   `tracy_ready: true` and confidence. The entities deploy with the app, so this
-   works in production with zero infrastructure.
-2. **Soon (pgvector):** Tracy already runs Postgres for memory. Enable the
-   pgvector extension, add a brain_entities table with an embedding column, and
-   a sync script that embeds each promoted entity and upserts it. The loop runs
-   the sync on promote, so deployed Tracy learns daily without a redeploy.
-   Retrieval is top-k with a confidence filter, matching her confidence-gating.
+1. **DONE (file read):** src/brain.js reads brain/entities/ off disk, filters
+   on `tracy_ready: true` and confidence >= 0.7, and injects entities whose
+   title, id, alias, or tag appears in the message. Zero infrastructure; the
+   entities deploy with the app.
+2. **DONE (embeddings + Postgres):** entities are embedded (Gemini, same model
+   as Tracy's knowledge base; cosine in JS, no pgvector needed) and upserted
+   into a brain_entities table. Retrieval also matches by MEANING, so a
+   question can find an entity without naming it. The server syncs the table
+   at boot; the loop runs `node ../scripts/brain-sync.js` so deployed Tracy
+   learns within a minute of a promotion, no redeploy. Tune with
+   BRAIN_MIN_CONFIDENCE, BRAIN_MIN_SCORE, BRAIN_MAX_ENTITIES.
 3. **Later (MCP server):** Wrap the brain in a small MCP server exposing
    search_entities, get_entity, and add_raw_note. Then Tracy, Claude Code, and any
    future surface all query the same brain through one interface, and Tracy can
