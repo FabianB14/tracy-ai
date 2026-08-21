@@ -25,6 +25,7 @@ import { buildDigest, knownApps, APPS } from "./digest.js";
 import { sendEmail, emailConfigured } from "./email.js";
 import { pushConfigured, getPublicKey, savePushSub, removePushSub, sendPushToUser } from "./push.js";
 import { kbEnabled, kbSearch, kbAdd, formatKnowledgeBlock, kbIngestDoc } from "./knowledge.js";
+import { brainEnabled, formatBrainBlock } from "./brain.js";
 import { extractPdfText } from "./pdf.js";
 import { geminiConfigured, geminiChat } from "./gemini.js";
 import { logAnswer, getAnswerStats } from "./answerlog.js";
@@ -159,6 +160,18 @@ app.post("/chat", requireAuth, async (req, res) => {
         if (memoryBlock) systemPrompt += "\n\n---\n\n" + memoryBlock;
       } catch (err) {
         console.error("memory load failed:", err.message);
+      }
+    }
+
+    // Interverse brain: curated entities from brain/entities/ (the daily brain
+    // loop's output). Injected when the message mentions an entity, so Tracy
+    // answers company/product questions from verified first-party knowledge.
+    if (brainEnabled() && lastText) {
+      try {
+        const brainBlock = formatBrainBlock(lastText);
+        if (brainBlock) systemPrompt += "\n\n---\n\n" + brainBlock;
+      } catch (err) {
+        console.error("brain inject failed:", err.message);
       }
     }
 
