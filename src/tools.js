@@ -12,6 +12,7 @@
 // calls to the BabyResell API. (Per project plan: that wiring comes later.)
 
 import { addMemory } from "./memory.js";
+import { addRawNote } from "./brain.js";
 import { vaultEnabled, storeSecret, listSecrets, getSecret, deleteSecret } from "./vault.js";
 import { babyresellConfigured, getStats, getActivity, getReportStats, getOpenReports, getShippingBacklog } from "./babyresell.js";
 import { geminiConfigured, webResearch, analyzeMedia } from "./gemini.js";
@@ -52,7 +53,35 @@ const coreHandlers = {
     const ok = await addMemory(context.userId, fact);
     return ok ? { status: "remembered", fact } : { status: "not_saved", reason: "storage error" };
   },
+  async brain_note({ note }, context = {}) {
+    try {
+      const r = await addRawNote({ text: note, source: context.userId || context.surface || null });
+      return { status: "queued", ...r, note: "It lands in the brain's inbox; the daily loop researches it from there." };
+    } catch (err) {
+      return { error: String(err.message || err) };
+    }
+  },
 };
+
+// Business ideas / research leads → the Interverse brain's inbox (brain/raw/).
+// Distinct from `remember` (personal facts about a user) and the knowledge base
+// (answers): brain notes get researched, sourced, and promoted by a daily loop.
+coreSchemas.push({
+  name: "brain_note",
+  description:
+    "Send an idea, lead, or business thought to the Interverse BRAIN's inbox for the daily research loop " +
+    "to investigate — e.g. a product idea, a partnership angle, a market question, a competitor sighting. " +
+    "Use when someone says things like 'note this idea', 'add this to the brain', 'have the brain look into…', " +
+    "or shares a business thought clearly worth researching later. NOT for personal facts (use remember) and " +
+    "NOT for how-to knowledge (that saves automatically). Half-formed thoughts are fine.",
+  input_schema: {
+    type: "object",
+    properties: {
+      note: { type: "string", description: "The idea or thought, as said — do not polish it into something it wasn't." },
+    },
+    required: ["note"],
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Notifications — let the user manage daily check-ins conversationally

@@ -5,6 +5,10 @@ is available via `date +%Y-%m-%d`.
 
 ## 1. Ingest
 
+First run: node ../scripts/brain-notes-pull.js
+(Pulls notes Tracy queued from her chat surfaces into raw/ files. Prints
+"queue empty" when there is nothing or no DATABASE_URL; that is fine.)
+
 List files in raw/ (excluding raw/archive/). For each file:
 
 - Identify the core idea or ideas. One raw file can feed multiple concepts.

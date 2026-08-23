@@ -18,7 +18,7 @@
 // semantic layer; a bad entity file never breaks loading.
 
 import crypto from "crypto";
-import { readFileSync, readdirSync, existsSync } from "fs";
+import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync } from "fs";
 import { fileURLToPath } from "url";
 import path from "path";
 import { dbEnabled, query } from "./db.js";
@@ -234,30 +234,129 @@ function keywordMatch(text, entities) {
   return scored.map((s) => s.e);
 }
 
-async function matchBrain(text) {
+// Scored two-layer match: exact-name keyword hits first, then semantic hits by
+// meaning. Returns [{ e, match: "keyword"|"semantic", score|null }] sorted by
+// relevance. Shared by the prompt injector and the MCP server's search tool.
+async function scoredMatches(text, { k = MAX_INJECT, minScore = MIN_SCORE } = {}) {
   const dbRows = await getDbRows();
   const pool = dbRows.length ? dbRows : loadEntities();
 
-  // Layer 1: exact-name keyword hits (work with or without embeddings).
-  const picked = keywordMatch(text, pool);
+  const picked = keywordMatch(text, pool).map((e) => ({ e, match: "keyword", score: null }));
 
-  // Layer 2: semantic hits by meaning (needs DB rows with embeddings + a key).
-  if (embeddingsConfigured() && dbRows.length && picked.length < MAX_INJECT) {
+  if (embeddingsConfigured() && dbRows.length && picked.length < k) {
     try {
       const qv = await embed(String(text).slice(0, 2000));
       if (qv) {
         const sem = dbRows
           .filter((r) => r.embedding)
-          .map((r) => ({ e: r, score: cosine(qv, r.embedding) }))
-          .filter((s) => s.score >= MIN_SCORE)
+          .map((r) => ({ e: r, match: "semantic", score: cosine(qv, r.embedding) }))
+          .filter((s) => s.score >= minScore)
           .sort((a, b) => b.score - a.score);
         for (const s of sem) {
-          if (!picked.some((p) => p.id === s.e.id)) picked.push(s.e);
+          if (!picked.some((p) => p.e.id === s.e.id)) picked.push(s);
         }
       }
     } catch (err) { console.error("brain semantic match failed:", err.message); }
   }
-  return picked.slice(0, MAX_INJECT);
+  return picked.slice(0, k);
+}
+
+async function matchBrain(text) {
+  return (await scoredMatches(text)).map((s) => s.e);
+}
+
+// ---- Query surface (used by the MCP server; safe for any caller) ----
+
+// Search entities by name or meaning. Returns summaries, not full bodies.
+export async function searchBrain(text, { k = 5, minScore = MIN_SCORE } = {}) {
+  const hits = await scoredMatches(text, { k, minScore });
+  return hits.map(({ e, match, score }) => ({
+    id: e.id,
+    title: e.title,
+    confidence: e.confidence,
+    match,
+    score: score == null ? null : Number(score.toFixed(3)),
+    snippet: e.body.slice(0, 300),
+  }));
+}
+
+// List every eligible entity (DB view when available, else disk).
+export async function listBrainEntities() {
+  const dbRows = await getDbRows();
+  const pool = dbRows.length ? dbRows : loadEntities();
+  return pool.map((e) => ({ id: e.id, title: e.title, confidence: e.confidence, terms: e.terms || [] }));
+}
+
+// Full entity by id.
+export async function getEntityById(id) {
+  const dbRows = await getDbRows();
+  const pool = dbRows.length ? dbRows : loadEntities();
+  const e = pool.find((r) => r.id === String(id).trim());
+  return e ? { id: e.id, title: e.title, confidence: e.confidence, body: e.body } : null;
+}
+
+// ---- Raw-note write-back (tier 3: thoughts flow INTO the brain) ----
+// Deployed Tracy has no durable disk, so notes land in a brain_raw_notes table;
+// scripts/brain-notes-pull.js materializes them into brain/raw/ files on the
+// machine that runs the daily loop. Local/no-DB callers write the file directly.
+
+const RAW_DIR = path.join(__dirname, "..", "brain", "raw");
+
+let notesSchemaReady = null;
+function ensureNotesSchema() {
+  if (!notesSchemaReady) {
+    notesSchemaReady = query(`
+      CREATE TABLE IF NOT EXISTS brain_raw_notes (
+        id     BIGSERIAL PRIMARY KEY,
+        ts     TIMESTAMPTZ NOT NULL DEFAULT now(),
+        source TEXT,
+        text   TEXT NOT NULL
+      );
+    `).catch((err) => { notesSchemaReady = null; throw err; });
+  }
+  return notesSchemaReady;
+}
+
+const slugify = (s) =>
+  String(s || "note").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "note";
+
+// Write a raw note directly into brain/raw/ (for callers that live next to the
+// repo, e.g. the MCP server on Fabian's machine). Returns the file path.
+export function writeRawNoteFile(text, slug) {
+  mkdirSync(RAW_DIR, { recursive: true });
+  const date = new Date().toISOString().slice(0, 10);
+  const base = `${date}-${slugify(slug || text.slice(0, 40))}`;
+  let file = path.join(RAW_DIR, `${base}.md`);
+  for (let i = 2; existsSync(file); i++) file = path.join(RAW_DIR, `${base}-${i}.md`);
+  writeFileSync(file, String(text).trim() + "\n");
+  return file;
+}
+
+// Save a raw note wherever this process can make it durable: the DB when
+// configured (deployed Tracy), else a file in brain/raw/ (local dev).
+export async function addRawNote({ text, source = null, slug = null }) {
+  const body = String(text || "").trim();
+  if (!body) throw new Error("note text required");
+  if (body.length > 20000) throw new Error("note too long (max 20000 chars)");
+  if (dbEnabled()) {
+    await ensureNotesSchema();
+    const { rows } = await query(
+      "INSERT INTO brain_raw_notes (source, text) VALUES ($1, $2) RETURNING id",
+      [source, body],
+    );
+    return { stored: "db", id: rows[0].id };
+  }
+  return { stored: "file", file: writeRawNoteFile(body, slug) };
+}
+
+// Drain queued notes from the DB (returns them and deletes the returned rows).
+// Used by scripts/brain-notes-pull.js before the daily loop's ingest step.
+export async function pullRawNotes() {
+  if (!dbEnabled()) return [];
+  await ensureNotesSchema();
+  const { rows } = await query("SELECT id, ts, source, text FROM brain_raw_notes ORDER BY id");
+  for (const r of rows) await query("DELETE FROM brain_raw_notes WHERE id = $1", [r.id]);
+  return rows;
 }
 
 // Build the system-prompt block for a message (empty string when nothing matches).

@@ -75,10 +75,19 @@ Three tiers, in order:
    at boot; the loop runs `node ../scripts/brain-sync.js` so deployed Tracy
    learns within a minute of a promotion, no redeploy. Tune with
    BRAIN_MIN_CONFIDENCE, BRAIN_MIN_SCORE, BRAIN_MAX_ENTITIES.
-3. **Later (MCP server):** Wrap the brain in a small MCP server exposing
-   search_entities, get_entity, and add_raw_note. Then Tracy, Claude Code, and any
-   future surface all query the same brain through one interface, and Tracy can
-   write thoughts back into raw/ herself.
+3. **DONE (MCP server + write-back):** mcp/brain-server.js exposes the brain to
+   any MCP client over stdio: brain_search_entities (keyword + semantic),
+   brain_get_entity, brain_list_entities, brain_add_note. Claude Code picks it
+   up automatically from .mcp.json at the repo root (or register manually:
+   `claude mcp add interverse-brain -- node mcp/brain-server.js`). With
+   DATABASE_URL set it reads the same live table deployed Tracy uses; without
+   it, it reads brain/entities/ off disk.
+
+   Tracy also writes thoughts back herself: her `brain_note` chat tool queues
+   ideas in a brain_raw_notes table (deployed Tracy has no durable disk), and
+   the loop's ingest step runs `node ../scripts/brain-notes-pull.js` to turn
+   the queue into raw/ files. Tell Tracy "add this to the brain: ..." from any
+   surface and the idea enters the same pipeline as your own raw notes.
 
 ## Seeing the graph
 

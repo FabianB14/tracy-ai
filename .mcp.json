@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "interverse-brain": {
+      "command": "node",
+      "args": ["mcp/brain-server.js"]
+    }
+  }
+}

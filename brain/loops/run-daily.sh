@@ -18,7 +18,7 @@ DATE=$(date +%Y-%m-%d)
 echo "=== Tracy Brain loop: $DATE ==="
 
 claude -p "$(cat loops/daily.md)" \
-  --allowedTools "Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,Bash(mv raw/*:*),Bash(node graph/build-graph.js),Bash(node ../scripts/brain-sync.js),Bash(git add .),Bash(git commit:*),Bash(git status:*),Bash(date:*),Bash(ls:*)" \
+  --allowedTools "Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,Bash(mv raw/*:*),Bash(node graph/build-graph.js),Bash(node ../scripts/brain-sync.js),Bash(node ../scripts/brain-notes-pull.js),Bash(git add .),Bash(git commit:*),Bash(git status:*),Bash(date:*),Bash(ls:*)" \
   --permission-mode acceptEdits \
   --max-turns 60
 
