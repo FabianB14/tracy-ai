@@ -18,16 +18,37 @@ you → Tracy: "have the agent fix the login bug in partout"
    + you rate it 1–5 → the router learns which agent is best per task type
 ```
 
+## Two ways to point it at repos
+
+**GitHub mode (recommended):** give `AGENT_REPOS` GitHub URLs. For each task
+the runner clones (or fetches) the repo fresh, works on a `tracy/task-N`
+branch, commits as "Tracy (Interverse assistant)", pushes the branch, and
+opens a **pull request** for you to review. Nothing is edited in place and
+nothing needs to live on your PC — which also means the runner can run in
+the cloud (below).
+
+```
+AGENT_REPOS={"tracy-ai":"https://github.com/FabianB14/tracy-ai","partout":"https://github.com/FabianB14/PartOut"}
+GITHUB_TOKEN=github_pat_…      # fine-grained: Contents + Pull requests (read/write) on those repos
+```
+
+Tracy's task report includes the PR link. `AGENT_PUSH=off` keeps changes on
+the local branch only; `AGENT_OPEN_PR=off` pushes without a PR.
+
+**Local mode:** give it paths to checkouts on the machine instead. The agent
+edits in place and commits (never pushes); you push. Handy for hands-on work.
+
 ## One-time setup (on the runner machine)
 
-1. Clone the repos you want Tracy to work on. Install the CLIs you'll allow:
-   [Claude Code](https://code.claude.com) (`claude`) and/or
-   [Codex CLI](https://developers.openai.com/codex) (`codex`), each logged in.
-2. In the tracy-ai clone, `npm install`, then create `.env` with:
+1. Install the CLIs you'll allow: [Claude Code](https://code.claude.com)
+   (`claude`) and/or [Codex CLI](https://developers.openai.com/codex) (`codex`),
+   each logged in (or with `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` set).
+2. In a tracy-ai clone, `npm install`, then create `.env` with:
    ```
    DATABASE_URL=postgresql://…            # Tracy's Postgres (External URL from Render)
    GEMINI_API_KEY=…                       # optional: lets results be saved to her memory
-   AGENT_REPOS={"tracy-ai":"/home/you/tracy-ai","partout":"/home/you/PartOut","baby-resell-app":"/home/you/baby-resell-app"}
+   AGENT_REPOS=…                          # GitHub URLs (above) or local paths
+   GITHUB_TOKEN=…                         # GitHub mode only
    ```
    Only repos listed in `AGENT_REPOS` can be touched. Anything else fails
    with a clear message.
@@ -36,6 +57,26 @@ you → Tracy: "have the agent fix the login bug in partout"
    node scripts/agent-runner.js
    ```
    Leave it running (tmux, a service, or just a terminal). It polls every 15s.
+
+## Running it in the cloud (no PC involved)
+
+With GitHub mode the runner is just a Node process with two CLIs, so it can
+be a **Render Background Worker** next to Tracy's web service — tasks then
+run 24/7 whether your laptop is open or not:
+
+1. Render → New → **Background Worker** → same repo (`tracy-ai`), branch `main`.
+2. Build command:
+   `npm install && npm install -g @anthropic-ai/claude-code @openai/codex`
+3. Start command: `node scripts/agent-runner.js`
+4. Environment: `DATABASE_URL` (the *Internal* URL works here), `GEMINI_API_KEY`,
+   `AGENT_REPOS` (GitHub URLs), `GITHUB_TOKEN`, plus API keys for the agents:
+   `ANTHROPIC_API_KEY` and/or `OPENAI_API_KEY`. In a container Codex's
+   sandbox may not initialize; set `CODEX_ARGS=--sandbox danger-full-access`
+   (the checkout is a throwaway clone, so this is contained).
+5. `AGENT_WORKDIR=/tmp/agent-work` keeps checkouts on the ephemeral disk.
+
+Cost note: a cloud worker bills the agents' usage to your API keys (that's what
+the per-task cost stats measure), rather than a desktop subscription.
 
 ## Using it from Tracy
 
@@ -92,7 +133,9 @@ down — and picks the best. Until then it uses `AGENT_DEFAULT`. Ask Tracy for
 
 ## Safety
 
-- The runner never pushes. Agents commit locally at most; you push.
+- Local mode: the runner never pushes; agents commit locally at most, you
+  push. GitHub mode: it pushes only to `tracy/task-N` branches and opens a PR
+  — `main` is never touched, and you review every merge.
 - Claude Code runs with `--permission-mode acceptEdits`; Codex with
   `--sandbox workspace-write`. Tighten or loosen via `CLAUDE_ARGS`/`CODEX_ARGS`.
 - A task times out after `AGENT_TIMEOUT_MS` (20 min) and is marked failed.

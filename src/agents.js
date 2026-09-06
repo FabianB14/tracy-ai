@@ -51,6 +51,7 @@ function ensureSchema() {
         rating        INTEGER,
         rating_note   TEXT
       );
+      ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS pr_url TEXT;
       CREATE INDEX IF NOT EXISTS agent_tasks_status_idx ON agent_tasks (status, id);
       CREATE INDEX IF NOT EXISTS agent_tasks_user_idx   ON agent_tasks (requested_by, id DESC);
     `).catch((err) => { schemaReady = null; throw err; });
@@ -138,7 +139,7 @@ const toTask = (r) => r && ({
   repo: r.repo, instruction: r.instruction, category: r.category, agent: r.agent, routeReason: r.route_reason,
   status: r.status, summary: r.summary, result: r.result, tokensIn: r.tokens_in, tokensOut: r.tokens_out,
   costUsd: r.cost_usd == null ? null : Number(r.cost_usd), durationMs: r.duration_ms, model: r.model,
-  error: r.error, rating: r.rating, ratingNote: r.rating_note, runner: r.runner,
+  error: r.error, rating: r.rating, ratingNote: r.rating_note, runner: r.runner, prUrl: r.pr_url || null,
   startedAt: r.started_at, finishedAt: r.finished_at,
 });
 
@@ -188,12 +189,12 @@ export async function claimTask(runnerId) {
   return toTask(rows[0]);
 }
 
-export async function completeTask(id, { result, summary, tokensIn, tokensOut, costUsd, durationMs, model }) {
+export async function completeTask(id, { result, summary, tokensIn, tokensOut, costUsd, durationMs, model, prUrl }) {
   await ensureSchema();
   await query(
     `UPDATE agent_tasks SET status = 'done', result = $1, summary = $2, tokens_in = $3, tokens_out = $4,
-       cost_usd = $5, duration_ms = $6, model = $7, finished_at = now(), updated_at = now() WHERE id = $8`,
-    [result ?? null, summary ?? null, tokensIn ?? null, tokensOut ?? null, costUsd ?? null, durationMs ?? null, model ?? null, Number(id)]);
+       cost_usd = $5, duration_ms = $6, model = $7, pr_url = $8, finished_at = now(), updated_at = now() WHERE id = $9`,
+    [result ?? null, summary ?? null, tokensIn ?? null, tokensOut ?? null, costUsd ?? null, durationMs ?? null, model ?? null, prUrl ?? null, Number(id)]);
 }
 
 export async function failTask(id, { error, result, tokensIn, tokensOut, costUsd, durationMs, model } = {}) {

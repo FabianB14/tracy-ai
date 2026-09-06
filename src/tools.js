@@ -177,7 +177,7 @@ const fmtTask = (t) => t && ({
   instruction: t.instruction.slice(0, 200), summary: t.summary || null, error: t.error || null,
   tokens: t.tokensIn != null ? { in: t.tokensIn, out: t.tokensOut } : null,
   costUsd: t.costUsd, durationMs: t.durationMs, model: t.model, rating: t.rating, routeReason: t.routeReason,
-  createdAt: t.createdAt, finishedAt: t.finishedAt,
+  prUrl: t.prUrl || null, createdAt: t.createdAt, finishedAt: t.finishedAt,
 });
 
 coreSchemas.push(
