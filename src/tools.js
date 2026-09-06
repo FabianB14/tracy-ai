@@ -13,6 +13,7 @@
 
 import { addMemory } from "./memory.js";
 import { addRawNote } from "./brain.js";
+import { kbEnabled, kbSearch, kbAdd, kbUpdate, kbDelete } from "./knowledge.js";
 import { vaultEnabled, storeSecret, listSecrets, getSecret, deleteSecret } from "./vault.js";
 import { babyresellConfigured, getStats, getActivity, getReportStats, getOpenReports, getShippingBacklog } from "./babyresell.js";
 import { geminiConfigured, webResearch, analyzeMedia } from "./gemini.js";
@@ -80,6 +81,81 @@ coreSchemas.push({
       note: { type: "string", description: "The idea or thought, as said — do not polish it into something it wasn't." },
     },
     required: ["note"],
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Knowledge correction — fix what Tracy has learned, in place
+// ---------------------------------------------------------------------------
+// Retrieved knowledge shows [#id] tags. When a person corrects Tracy, or a
+// saved answer turns out wrong/outdated, she repairs the entry rather than
+// leaving a wrong note next to a right one. Scoped to global + the user's own.
+
+coreSchemas.push(
+  {
+    name: "correct_knowledge",
+    description:
+      "Fix or update something in your knowledge base. Use when the person corrects a fact you stated from " +
+      "memory, or you learn that a saved answer is wrong or outdated. Pass the entry's id (the [#id] shown " +
+      "with retrieved knowledge) when you have it; otherwise pass a `query` describing the wrong note and " +
+      "the best match is updated (or a fresh entry is saved if nothing matches). Always give the full " +
+      "corrected content, not a diff.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Knowledge entry id from a [#id] tag, if known." },
+        query: { type: "string", description: "If no id: what the wrong/outdated note is about, to find it." },
+        corrected_content: { type: "string", description: "The complete, corrected answer/fact to store." },
+        reason: { type: "string", description: "One line on why (e.g. 'user corrected the torque spec'). Optional." },
+      },
+      required: ["corrected_content"],
+    },
+  },
+  {
+    name: "forget_knowledge",
+    description:
+      "Delete a knowledge-base entry that is wrong, obsolete, or shouldn't have been saved. Pass the [#id]. " +
+      "Prefer correct_knowledge when a fixed version exists; forget only when nothing should remain.",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "string", description: "Knowledge entry id from a [#id] tag." } },
+      required: ["id"],
+    },
+  },
+);
+
+Object.assign(coreHandlers, {
+  async correct_knowledge({ id, query: q, corrected_content, reason }, context = {}) {
+    if (!kbEnabled()) return { error: "The knowledge base isn't enabled on this server (needs a Gemini key)." };
+    const content = String(corrected_content || "").trim();
+    if (!content) return { error: "corrected_content is required." };
+    const userId = context.userId;
+    try {
+      if (id) {
+        const r = await kbUpdate(id, { userId, content });
+        return r ? { status: "corrected", id: r.id, reason: reason || null }
+                 : { error: `No entry #${id} you can edit (it may be another user's, or already gone).` };
+      }
+      if (q) {
+        const hits = await kbSearch(q, { userId, k: 1, minScore: 0.8 });
+        if (hits.length) {
+          const r = await kbUpdate(hits[0].id, { userId, content });
+          if (r) return { status: "corrected", id: r.id, replaced: hits[0].content.slice(0, 120), reason: reason || null };
+        }
+      }
+      // Nothing to fix in place — save the corrected knowledge fresh so it's
+      // what gets retrieved next time. Scope to the user unless it's clearly general.
+      const ok = await kbAdd({ scope: userId || "global", kind: "qa", question: q || "", content });
+      return ok ? { status: "saved_new", note: "No matching entry to fix; saved the corrected version as new knowledge." }
+                : { status: "not_saved", reason: "Near-duplicate of an existing entry, or storage error." };
+    } catch (err) { return { error: String(err.message || err) }; }
+  },
+  async forget_knowledge({ id }, context = {}) {
+    if (!kbEnabled()) return { error: "The knowledge base isn't enabled on this server (needs a Gemini key)." };
+    try {
+      const ok = await kbDelete(id, { userId: context.userId });
+      return ok ? { status: "forgotten", id } : { error: `No entry #${id} you can delete.` };
+    } catch (err) { return { error: String(err.message || err) }; }
   },
 });
 

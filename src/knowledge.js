@@ -61,14 +61,14 @@ async function candidates(scopes) {
   if (dbEnabled()) {
     await ensureSchema();
     const { rows } = await query(
-      "SELECT question, content, embedding FROM knowledge WHERE scope = ANY($1) ORDER BY id DESC LIMIT 2000",
+      "SELECT id, scope, question, content, embedding FROM knowledge WHERE scope = ANY($1) ORDER BY id DESC LIMIT 2000",
       [scopes]);
-    return rows.map((r) => ({ question: r.question, content: r.content, embedding: r.embedding }));
+    return rows.map((r) => ({ id: String(r.id), scope: r.scope, question: r.question, content: r.content, embedding: r.embedding }));
   }
-  return readStore().filter((e) => scopes.includes(e.scope));
+  return readStore().filter((e) => scopes.includes(e.scope)).map((e) => ({ ...e, id: String(e.id) }));
 }
 
-// Retrieve the top-k most relevant entries for a query. Returns [{question, content, score}].
+// Retrieve the top-k most relevant entries for a query. Returns [{id, question, content, score}].
 export async function kbSearch(text, { userId, k = 4, minScore = 0.76 } = {}) {
   if (!kbEnabled() || !text) return [];
   const vec = await embed(text);
@@ -77,9 +77,73 @@ export async function kbSearch(text, { userId, k = 4, minScore = 0.76 } = {}) {
   if (userId) scopes.push(userId);
   const cand = await candidates(scopes);
   const scored = cand
-    .map((e) => ({ question: e.question, content: e.content, score: Array.isArray(e.embedding) ? cosine(vec, e.embedding) : 0 }))
+    .map((e) => ({ id: e.id, scope: e.scope, question: e.question, content: e.content, score: Array.isArray(e.embedding) ? cosine(vec, e.embedding) : 0 }))
     .sort((a, b) => b.score - a.score);
   return scored.filter((s) => s.score >= minScore).slice(0, k);
+}
+
+// ---- Correction: fix, update, or forget what Tracy has learned ----
+// A knowledge base that can't be corrected slowly fills with confident
+// mistakes. These let Tracy (via her tools) repair an entry in place when
+// someone corrects her or a fact goes stale. Scoped: a caller may only touch
+// entries in "global" or their own userId scope.
+
+function allowedScopes(userId) { const s = ["global"]; if (userId) s.push(userId); return s; }
+
+// Fetch one entry (scope-checked). Returns {id, scope, question, content} or null.
+export async function kbGet(id, { userId } = {}) {
+  const key = String(id || "").trim();
+  if (!key) return null;
+  const scopes = allowedScopes(userId);
+  if (dbEnabled()) {
+    if (!/^\d+$/.test(key)) return null;
+    await ensureSchema();
+    const { rows } = await query(
+      "SELECT id, scope, question, content FROM knowledge WHERE id = $1 AND scope = ANY($2)", [Number(key), scopes]);
+    return rows[0] ? { ...rows[0], id: String(rows[0].id) } : null;
+  }
+  const e = readStore().find((r) => String(r.id) === key && scopes.includes(r.scope));
+  return e ? { id: String(e.id), scope: e.scope, question: e.question, content: e.content } : null;
+}
+
+// Replace an entry's content (and optionally its question). Re-embeds when the
+// text the embedding was built from changes. Returns the updated entry or null.
+export async function kbUpdate(id, { userId, content, question } = {}) {
+  const cur = await kbGet(id, { userId });
+  if (!cur) return null;
+  const newContent = content != null ? String(content).trim() : cur.content;
+  const newQuestion = question != null ? String(question).trim() : cur.question;
+  if (!newContent) return null;
+  // The stored vector is of (question || content); rebuild it if that source changed.
+  const oldSource = cur.question || cur.content, newSource = newQuestion || newContent;
+  let vec = null;
+  if (oldSource !== newSource) { vec = await embed(newSource); if (!vec) return null; }
+  if (dbEnabled()) {
+    await query(
+      `UPDATE knowledge SET content = $1, question = $2, embedding = COALESCE($3::jsonb, embedding) WHERE id = $4`,
+      [newContent, newQuestion || null, vec ? JSON.stringify(vec) : null, Number(cur.id)]);
+  } else {
+    const rows = readStore();
+    const r = rows.find((x) => String(x.id) === cur.id);
+    if (!r) return null;
+    r.content = newContent; r.question = newQuestion || ""; if (vec) r.embedding = vec;
+    writeStore(rows);
+  }
+  return { id: cur.id, scope: cur.scope, question: newQuestion, content: newContent };
+}
+
+// Remove an entry (scope-checked). Returns true if something was deleted.
+export async function kbDelete(id, { userId } = {}) {
+  const cur = await kbGet(id, { userId });
+  if (!cur) return false;
+  if (dbEnabled()) {
+    const { rowCount } = await query("DELETE FROM knowledge WHERE id = $1", [Number(cur.id)]);
+    return rowCount > 0;
+  }
+  const rows = readStore();
+  const next = rows.filter((x) => String(x.id) !== cur.id);
+  writeStore(next);
+  return next.length < rows.length;
 }
 
 // Save a piece of knowledge. Embeds it, skips near-duplicates in the same scope.
@@ -173,13 +237,17 @@ export function formatKnowledgeBlock(hits) {
   if (!hits || !hits.length) return "";
   const items = hits.map((h) => {
     const q = h.question ? `Q: ${h.question}\n  ` : "";
-    return `- ${q}${h.content}`.slice(0, 1200);
+    const tag = h.id ? `[#${h.id}] ` : "";
+    return `- ${tag}${q}${h.content}`.slice(0, 1200);
   });
   return (
     "## From your knowledge base (things you've learned before)\n" +
     items.join("\n") +
     "\n\n(These are notes and past answers you saved. Use them when they're " +
     "relevant and still accurate. If the question needs live or current data " +
-    "— prices, stats, recent events — use your tools instead of these notes.)"
+    "— prices, stats, recent events — use your tools instead of these notes. " +
+    "If one of them is wrong or outdated — the person corrects you, or you " +
+    "learn better — fix it with correct_knowledge using its [#id]; don't leave " +
+    "a wrong note in place.)"
   );
 }
