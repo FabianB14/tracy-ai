@@ -15,6 +15,7 @@ import { addMemory } from "./memory.js";
 import { addRawNote } from "./brain.js";
 import { kbEnabled, kbSearch, kbAdd, kbUpdate, kbDelete } from "./knowledge.js";
 import { agentsEnabled, createTask, getTask, listTasks, rateTask, cancelTask, getAgentStats, chooseAgent, CATEGORIES, AGENTS } from "./agents.js";
+import { createDocument } from "./documents.js";
 import { vaultEnabled, storeSecret, listSecrets, getSecret, deleteSecret } from "./vault.js";
 import { babyresellConfigured, getStats, getActivity, getReportStats, getOpenReports, getShippingBacklog } from "./babyresell.js";
 import { geminiConfigured, webResearch, analyzeMedia } from "./gemini.js";
@@ -82,6 +83,37 @@ coreSchemas.push({
       note: { type: "string", description: "The idea or thought, as said — do not polish it into something it wasn't." },
     },
     required: ["note"],
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Documents — Tracy writes real files (Markdown, PDF, Word) people can download
+// ---------------------------------------------------------------------------
+coreSchemas.push({
+  name: "create_document",
+  description:
+    "Create a downloadable file from Markdown you write: a report, summary, plan, guide, checklist, meeting notes, " +
+    "SOP, spec — as .md, .pdf, or .docx (Word). Use when someone asks for a document, report, PDF, Word file, or " +
+    "something they can download/share/print. Write the full content in Markdown (headings, lists, bold, code " +
+    "blocks). Returns a download link — give it to the person as a Markdown link.",
+  input_schema: {
+    type: "object",
+    properties: {
+      title: { type: "string", description: "Document title; becomes the file name (e.g. 'BabyResell Weekly Report')." },
+      content_markdown: { type: "string", description: "The complete document body in Markdown." },
+      format: { type: "string", enum: ["md", "pdf", "docx"], description: "File type. Default pdf if they said PDF, docx if they said Word/doc, else md." },
+    },
+    required: ["title", "content_markdown"],
+  },
+});
+Object.assign(coreHandlers, {
+  async create_document({ title, content_markdown, format }, context = {}) {
+    try {
+      const f = await createDocument({ userId: context.userId, title, markdown: content_markdown, format: format || "md" });
+      const url = `${context.baseUrl || ""}/files/${f.id}`;
+      return { status: "created", name: f.name, format: f.name.split(".").pop(), sizeBytes: f.size, url,
+               note: `Share this as a link: [${f.name}](${url})` };
+    } catch (err) { return { error: String(err.message || err) }; }
   },
 });
 

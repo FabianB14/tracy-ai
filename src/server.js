@@ -27,6 +27,7 @@ import { pushConfigured, getPublicKey, savePushSub, removePushSub, sendPushToUse
 import { kbEnabled, kbSearch, kbAdd, formatKnowledgeBlock, kbIngestDoc, kbReembedIfModelChanged } from "./knowledge.js";
 import { brainEnabled, formatBrainBlock, syncBrain, resetBrainEmbeddings } from "./brain.js";
 import { listThreads, getThread, saveThread, deleteThread } from "./threads.js";
+import { getFile, extractText } from "./documents.js";
 import { extractPdfText } from "./pdf.js";
 import { geminiConfigured, geminiChat } from "./gemini.js";
 import { logAnswer, getAnswerStats } from "./answerlog.js";
@@ -39,6 +40,7 @@ const DYNAMIC_TOOLS = new Set([
   "vault_store", "vault_list", "vault_get", "vault_delete",
   "brain_note", "correct_knowledge", "forget_knowledge",
   "code_task", "task_status", "rate_task", "cancel_task", "agent_stats",
+  "create_document",
 ]);
 
 // Turns that touched the vault carry secrets — never store their content in
@@ -144,7 +146,10 @@ app.post("/chat", requireAuth, async (req, res) => {
     // userId is the client's self-declared id. Vault tools trust only the former.
     const authUser = req.authUser || null;
     const resolved = resolveSurface(surface);
-    const toolkit = buildToolkit(resolved.toolSets, { userId, surface: resolved.id, tz, authUser });
+    // Public base URL of this API, so tools can hand back absolute links (the
+    // web app is on a different origin). Honors the proxy's forwarded proto.
+    const baseUrl = (process.env.PUBLIC_BASE_URL || `${req.headers["x-forwarded-proto"] || req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+    const toolkit = buildToolkit(resolved.toolSets, { userId, surface: resolved.id, tz, authUser, baseUrl });
 
     // Per-user memory: load what Tracy remembers about this user and inject it
     // into her system prompt so she recalls them across sessions. Best-effort —
@@ -368,6 +373,37 @@ app.post("/threads", requireAuth, async (req, res) => {
     res.json(await saveThread({ id, userId, surface, title, messages }));
   } catch (err) { console.error("thread save failed:", err.message); res.status(500).json({ error: "Couldn't save the conversation." }); }
 });
+// POST /threads/import — bring an exported conversation back (Settings →
+// Conversations → Export produces the JSON). Optionally also ingest its text
+// into the knowledge base so Tracy can draw on it later.
+app.post("/threads/import", requireAuth, async (req, res) => {
+  try {
+    const { userId, export: exp, ingest } = req.body || {};
+    if (!userId || !exp || !Array.isArray(exp.messages)) return res.status(400).json({ error: "userId and an exported conversation are required" });
+    const saved = await saveThread({ userId, surface: exp.surface, title: exp.title, messages: exp.messages });
+    let learned = null;
+    if (ingest && kbEnabled()) {
+      const transcript = exp.messages.filter((m) => m && typeof m.content === "string")
+        .map((m) => `${m.role === "user" ? "User" : "Tracy"}: ${m.content}`).join("\n\n");
+      learned = await kbIngestDoc({ scope: userId, title: `Conversation: ${saved.title}`, text: transcript.slice(0, 400000) }).catch(() => null);
+    }
+    res.json({ ok: true, id: saved.id, title: saved.title, learned });
+  } catch (err) { console.error("thread import failed:", err.message); res.status(500).json({ error: "Couldn't import that conversation." }); }
+});
+
+// GET /files/:id — download a document Tracy created. Ids are 32 random hex
+// chars (unguessable), so the link itself is the credential: it opens in a
+// plain browser tab without a login prompt.
+app.get("/files/:id", async (req, res) => {
+  try {
+    const f = await getFile(req.params.id);
+    if (!f) return res.status(404).send("Not found");
+    res.setHeader("Content-Type", f.mime);
+    res.setHeader("Content-Disposition", `attachment; filename="${f.name.replace(/"/g, "")}"`);
+    res.send(f.bytes);
+  } catch (err) { console.error("file download failed:", err.message); res.status(500).send("Couldn't fetch that file."); }
+});
+
 app.delete("/threads/:id", requireAuth, async (req, res) => {
   try { res.json({ deleted: await deleteThread(String(req.query.userId || ""), req.params.id) }); }
   catch (err) { console.error("thread delete failed:", err.message); res.status(500).json({ error: "Couldn't delete that conversation." }); }
@@ -383,17 +419,17 @@ app.get("/kb/stats", async (_req, res) => {
 // embedded). Body: { userId, title, content, scope? }. scope "global" (default)
 // shares it with everyone; "me" keeps it to the uploading user.
 app.post("/kb/upload", requireAuth, async (req, res) => {
-  const { userId, title, content, scope, pdfBase64 } = req.body || {};
+  const { userId, title, content, scope, pdfBase64, fileBase64, filename } = req.body || {};
   if (!kbEnabled()) return res.status(400).json({ error: "Knowledge base isn't set up on the server yet (needs a Gemini key)." });
 
-  // A PDF arrives base64-encoded; extract its text first. Otherwise use `content`.
+  // Binary uploads arrive base64-encoded: `fileBase64` + `filename` for any
+  // supported type (pdf, docx, html, text…), or the older `pdfBase64`.
   let text = content;
-  if (pdfBase64) {
-    try {
-      text = await extractPdfText(Buffer.from(pdfBase64, "base64"));
-    } catch (err) {
-      return res.status(400).json({ error: "Couldn't read that PDF: " + err.message });
-    }
+  try {
+    if (fileBase64) text = await extractText({ filename: filename || title || "file.txt", buffer: Buffer.from(fileBase64, "base64") });
+    else if (pdfBase64) text = await extractPdfText(Buffer.from(pdfBase64, "base64"));
+  } catch (err) {
+    return res.status(400).json({ error: "Couldn't read that file: " + err.message });
   }
   if (!text || !String(text).trim()) return res.status(400).json({ error: "No readable text found in that file (a scanned/image-only PDF won't work)." });
 

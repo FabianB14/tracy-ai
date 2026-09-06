@@ -272,6 +272,21 @@
       return true;
     } catch { return false; }
   }
+  // Download a conversation as JSON (re-importable via 📎, readable as-is).
+  function exportThread(t) {
+    const exp = { tracyExport: 1, exportedAt: new Date().toISOString(), title: t.title || "Conversation", surface: t.surface || settings.surface,
+                  messages: (t.messages || []).map((m) => ({ role: m.role, content: m.content })) };
+    const blob = new Blob([JSON.stringify(exp, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = (exp.title.replace(/[^\w\- ]+/g, "").trim().slice(0, 60) || "conversation") + ".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+  function exportCurrent() {
+    if (!messages.length) { addMessage("system", "Nothing to export yet — say something first."); return; }
+    exportThread({ title: messages.find((m) => m.role === "user")?.content?.slice(0, 60), surface: settings.surface, messages });
+  }
   function newThread() {
     messages = []; threadId = null; store.set("threadId", null);
     elTranscript.innerHTML = ""; elCaption.textContent = "";
@@ -290,6 +305,7 @@
         const when = new Date(t.updatedAt); const stamp = isNaN(when) ? "" : when.toLocaleDateString(undefined, { month: "short", day: "numeric" });
         row.innerHTML = `<div class="thread-text"><strong></strong><span class="hint"></span></div>
           <button class="ghost-btn thread-open" type="button">Open</button>
+          <button class="ghost-btn thread-export" type="button" title="Export (download JSON you can re-import or keep)" aria-label="Export">⬇</button>
           <button class="ghost-btn thread-del" type="button" aria-label="Delete">✕</button>`;
         row.querySelector("strong").textContent = t.title || "Conversation";
         row.querySelector("span").textContent = `${t.count} messages · ${stamp}${t.surface ? " · " + t.surface : ""}${t.id === threadId ? " · current" : ""}`;
@@ -297,6 +313,10 @@
           const r = await fetch(api() + "/threads/" + encodeURIComponent(t.id) + "?userId=" + encodeURIComponent(settings.userId), { headers: authHeaders(false) });
           if (!r.ok) return;
           renderThread(await r.json()); modal.hidden = true;
+        };
+        row.querySelector(".thread-export").onclick = async () => {
+          const r = await fetch(api() + "/threads/" + encodeURIComponent(t.id) + "?userId=" + encodeURIComponent(settings.userId), { headers: authHeaders(false) });
+          if (r.ok) exportThread(await r.json());
         };
         row.querySelector(".thread-del").onclick = async () => {
           await fetch(api() + "/threads/" + encodeURIComponent(t.id) + "?userId=" + encodeURIComponent(settings.userId), { method: "DELETE", headers: authHeaders(false) }).catch(() => {});
@@ -928,19 +948,36 @@
     for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
     return btoa(bin);
   }
+  // An exported conversation (Settings → Conversations → ⬇) comes back in as a
+  // saved thread, optionally also learned into the knowledge base.
+  async function importChatExport(exp, note) {
+    const ingest = confirm(`Import “${exp.title || "conversation"}” (${exp.messages.length} messages).\n\nAlso add it to Tracy's knowledge so she can draw on it later?`);
+    try {
+      const res = await fetch(api() + "/threads/import", { method: "POST", headers: authHeaders(true),
+        body: JSON.stringify({ userId: settings.userId, export: exp, ingest }) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) { note.textContent = d.error || "Couldn't import that conversation."; return; }
+      note.textContent = `Imported “${d.title}”` + (d.learned ? ` and learned ${d.learned.added} section${d.learned.added === 1 ? "" : "s"}` : "") + ". Find it under Settings → Conversations.";
+    } catch { note.textContent = "Couldn't reach the server."; }
+  }
+
   async function uploadDoc(file) {
     if (!file) return;
-    const isPdf = /\.pdf$/i.test(file.name) || file.type === "application/pdf";
-    const maxMB = isPdf ? 10 : 2;
+    const isBinary = /\.(pdf|docx)$/i.test(file.name) || /pdf|officedocument/.test(file.type);
+    const maxMB = isBinary ? 10 : 2;
     if (file.size > maxMB * 1024 * 1024) { addMessage("system", `That file's too big (max ${maxMB} MB). Try splitting it.`); return; }
-    const note = addMessage("system", `Learning “${file.name}”…`);
+    const note = addMessage("system", `Reading “${file.name}”…`);
     let body;
     try {
-      if (isPdf) {
-        body = { userId: settings.userId, title: file.name, pdfBase64: arrayBufferToBase64(await file.arrayBuffer()) };
+      if (isBinary) {
+        body = { userId: settings.userId, title: file.name, filename: file.name, fileBase64: arrayBufferToBase64(await file.arrayBuffer()) };
       } else {
         const text = await file.text();
         if (!text.trim()) { note.textContent = "That file looks empty."; return; }
+        // A Tracy chat export? Import it as a conversation instead of a document.
+        if (/\.json$/i.test(file.name)) {
+          try { const j = JSON.parse(text); if (j && j.tracyExport && Array.isArray(j.messages)) return importChatExport(j, note); } catch { /* not an export */ }
+        }
         body = { userId: settings.userId, title: file.name, content: text };
       }
     } catch { note.textContent = "Couldn't read that file."; return; }
@@ -979,6 +1016,7 @@
   $("cfg-pitch").addEventListener("input", (e) => { $("cfg-pitch-val").textContent = (+e.target.value).toFixed(2); });
   $("cfg-silence").addEventListener("input", (e) => { $("cfg-silence-val").textContent = (+e.target.value).toFixed(1) + "s"; });
   $("cfg-clear").addEventListener("click", () => { newThread(); modal.hidden = true; });
+  $("cfg-export").addEventListener("click", exportCurrent);
   $("mute-btn").addEventListener("click", (e) => {
     settings.autoSpeak = !settings.autoSpeak; store.set("autoSpeak", settings.autoSpeak);
     e.currentTarget.textContent = settings.autoSpeak ? "🔊" : "🔇";
