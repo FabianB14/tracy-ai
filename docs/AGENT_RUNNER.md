@@ -54,6 +54,33 @@ prompt: conventions, how to verify, what not to touch, what "done" means. It's
 the equivalent of CLAUDE.md for Tracy's delegated work, and works for both
 agents. `tracy-ai/TRACY.md` is a template to copy.
 
+## Giving the agents the brain (MCP)
+
+Both agents can query Interverse's brain while they work — search entities,
+read "the play", drop a raw note — through the brain's MCP server
+(`mcp/brain-server.js`).
+
+- **Claude Code:** automatic. `.mcp.json` at the tracy-ai repo root registers
+  `interverse-brain`; approve it once when prompted.
+- **Codex:** register it once (global, applies to every repo Codex runs in):
+  ```
+  codex mcp add interverse-brain -- node /abs/path/tracy-ai/mcp/brain-server.js
+  ```
+  or in `~/.codex/config.toml`:
+  ```toml
+  [mcp_servers.interverse-brain]
+  command = "node"
+  args = ["/abs/path/tracy-ai/mcp/brain-server.js"]
+  [mcp_servers.interverse-brain.env]
+  DATABASE_URL = "postgresql://…"   # optional: live table + semantic search
+  GEMINI_API_KEY = "…"              # optional: semantic search
+  ```
+  Verify with `/mcp` inside a Codex session, or `codex mcp list`.
+
+Codex reads `AGENTS.md` the way Claude Code reads `CLAUDE.md`. The runner
+already prepends `TRACY.md` to every task for both agents, so you don't need
+an AGENTS.md — but if a repo has one, Codex honors it too.
+
 ## How routing works
 
 Each run records agent, category, tokens, cost (Claude Code reports USD
