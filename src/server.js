@@ -38,6 +38,7 @@ const DYNAMIC_TOOLS = new Set([
   "schedule_checkin", "list_checkins", "cancel_checkin",
   "vault_store", "vault_list", "vault_get", "vault_delete",
   "brain_note", "correct_knowledge", "forget_knowledge",
+  "code_task", "task_status", "rate_task", "cancel_task", "agent_stats",
 ]);
 
 // Turns that touched the vault carry secrets — never store their content in

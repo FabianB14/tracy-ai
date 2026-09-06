@@ -14,6 +14,7 @@
 import { addMemory } from "./memory.js";
 import { addRawNote } from "./brain.js";
 import { kbEnabled, kbSearch, kbAdd, kbUpdate, kbDelete } from "./knowledge.js";
+import { agentsEnabled, createTask, getTask, listTasks, rateTask, cancelTask, getAgentStats, chooseAgent, CATEGORIES, AGENTS } from "./agents.js";
 import { vaultEnabled, storeSecret, listSecrets, getSecret, deleteSecret } from "./vault.js";
 import { babyresellConfigured, getStats, getActivity, getReportStats, getOpenReports, getShippingBacklog } from "./babyresell.js";
 import { geminiConfigured, webResearch, analyzeMedia } from "./gemini.js";
@@ -155,6 +156,145 @@ Object.assign(coreHandlers, {
     try {
       const ok = await kbDelete(id, { userId: context.userId });
       return ok ? { status: "forgotten", id } : { error: `No entry #${id} you can delete.` };
+    } catch (err) { return { error: String(err.message || err) }; }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Agent tasks — Tracy delegates coding work to Claude Code or Codex
+// ---------------------------------------------------------------------------
+// A task is queued in Postgres and picked up by scripts/agent-runner.js on a
+// machine that has the repos and CLIs. Requires a VERIFIED identity (access
+// key bound to a person): these tasks run real tools against real repos.
+// Memory first: before queuing, Tracy checks whether she already has a result
+// for the same repo + ask and returns that instead of spending a run.
+
+const NO_IDENTITY_AGENTS =
+  "Code tasks need a verified identity (a personal access key). Sign in with yours under Settings → Identity & access.";
+
+const fmtTask = (t) => t && ({
+  id: t.id, status: t.status, repo: t.repo, category: t.category, agent: t.agent,
+  instruction: t.instruction.slice(0, 200), summary: t.summary || null, error: t.error || null,
+  tokens: t.tokensIn != null ? { in: t.tokensIn, out: t.tokensOut } : null,
+  costUsd: t.costUsd, durationMs: t.durationMs, model: t.model, rating: t.rating, routeReason: t.routeReason,
+  createdAt: t.createdAt, finishedAt: t.finishedAt,
+});
+
+coreSchemas.push(
+  {
+    name: "code_task",
+    description:
+      "Delegate a coding/repo task to an AI coding agent (Claude Code or Codex) that runs on the team's machine " +
+      "against a named repo: fix a bug, add a feature, refactor, review code, explore/explain a codebase, write " +
+      "tests or docs. The task is QUEUED; a runner picks it up and the result comes back later (check with " +
+      "task_status). The agent is chosen automatically from past cost/quality stats unless one is requested. " +
+      "Before queuing, an identical earlier task's result is reused if one exists.",
+    input_schema: {
+      type: "object",
+      properties: {
+        repo: { type: "string", description: "Repo name as configured on the runner, e.g. 'tracy-ai', 'partout', 'baby-resell-app'." },
+        instruction: { type: "string", description: "What to do, in full — the agent sees nothing else besides the repo and its TRACY.md." },
+        category: { type: "string", enum: CATEGORIES, description: "Task type; drives agent routing + stats. Default 'other'." },
+        agent: { type: "string", enum: ["auto", ...AGENTS], description: "Force an agent, or 'auto' (default) to route by stats." },
+      },
+      required: ["repo", "instruction"],
+    },
+  },
+  {
+    name: "task_status",
+    description: "Check a code task by id, or list the requester's recent tasks (no id). Shows status, summary, tokens, cost, duration, and which agent ran it.",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "number", description: "Task id. Omit to list recent tasks." } },
+    },
+  },
+  {
+    name: "rate_task",
+    description:
+      "Rate a finished code task 1–5 on how well it did the job (use the person's judgment when they give feedback, " +
+      "or your own after reviewing the result). Ratings train the router that picks Claude vs Codex per task type.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "number", description: "Task id." },
+        rating: { type: "number", description: "1 (bad) to 5 (excellent)." },
+        note: { type: "string", description: "Optional one-line reason." },
+      },
+      required: ["id", "rating"],
+    },
+  },
+  {
+    name: "cancel_task",
+    description: "Cancel a code task that is still queued (not yet running).",
+    input_schema: { type: "object", properties: { id: { type: "number", description: "Task id." } }, required: ["id"] },
+  },
+  {
+    name: "agent_stats",
+    description:
+      "Compare Claude Code vs Codex from recorded runs: per agent and task category — runs, success rate, average " +
+      "tokens, cost, duration, and rating — plus which agent the router currently recommends for each category.",
+    input_schema: { type: "object", properties: {} },
+  },
+);
+
+Object.assign(coreHandlers, {
+  async code_task({ repo, instruction, category, agent }, context = {}) {
+    if (!agentsEnabled()) return { error: "Code tasks aren't available: the server has no database to queue them in." };
+    if (!context.authUser?.userId) return { error: NO_IDENTITY_AGENTS };
+    const r = String(repo || "").trim(), ins = String(instruction || "").trim();
+    if (!r || !ins) return { error: "repo and instruction are both required." };
+    // Memory first: same repo + same ask → reuse the earlier result.
+    try {
+      if (kbEnabled()) {
+        const hits = await kbSearch(`[${r}] ${ins}`, { userId: context.userId, k: 1, minScore: 0.93 });
+        if (hits.length && /^\[agent:/.test(hits[0].content)) {
+          return { status: "reused", note: "You already have a result for this exact task — no new run queued.", knowledge_id: hits[0].id, result: hits[0].content.slice(0, 3000) };
+        }
+      }
+    } catch { /* best-effort */ }
+    try {
+      const t = await createTask({ requestedBy: context.authUser.userId, surface: context.surface, repo: r, instruction: ins, category, agentPref: agent });
+      return { status: "queued", id: t.id, agent: t.agent, category: t.category, routeReason: t.reason,
+               note: "A runner on the team's machine must be online (scripts/agent-runner.js) to pick this up. Check back with task_status." };
+    } catch (err) { return { error: String(err.message || err) }; }
+  },
+  async task_status({ id }, context = {}) {
+    if (!agentsEnabled()) return { error: "Code tasks aren't available on this server." };
+    if (!context.authUser?.userId) return { error: NO_IDENTITY_AGENTS };
+    try {
+      if (id) {
+        const t = await getTask(id);
+        if (!t) return { error: `No task #${id}.` };
+        const out = fmtTask(t);
+        if (t.status === "done" && t.result) out.result = t.result.slice(0, 6000);
+        return out;
+      }
+      return { tasks: (await listTasks({ requestedBy: context.authUser.userId, limit: 10 })).map(fmtTask) };
+    } catch (err) { return { error: String(err.message || err) }; }
+  },
+  async rate_task({ id, rating, note }, context = {}) {
+    if (!agentsEnabled()) return { error: "Code tasks aren't available on this server." };
+    if (!context.authUser?.userId) return { error: NO_IDENTITY_AGENTS };
+    try {
+      const t = await rateTask(id, rating, note);
+      return t ? { status: "rated", id: t.id, rating: t.rating } : { error: `No task #${id}.` };
+    } catch (err) { return { error: String(err.message || err) }; }
+  },
+  async cancel_task({ id }, context = {}) {
+    if (!agentsEnabled()) return { error: "Code tasks aren't available on this server." };
+    if (!context.authUser?.userId) return { error: NO_IDENTITY_AGENTS };
+    try {
+      return (await cancelTask(id)) ? { status: "cancelled", id } : { error: `Task #${id} isn't queued (already running, finished, or doesn't exist).` };
+    } catch (err) { return { error: String(err.message || err) }; }
+  },
+  async agent_stats(_input, context = {}) {
+    if (!agentsEnabled()) return { error: "Code tasks aren't available on this server." };
+    if (!context.authUser?.userId) return { error: NO_IDENTITY_AGENTS };
+    try {
+      const stats = await getAgentStats();
+      const recommendations = {};
+      for (const c of CATEGORIES) { const r = await chooseAgent(c, "auto"); recommendations[c] = { agent: r.agent, reason: r.reason }; }
+      return { stats, recommendations, note: stats.length ? undefined : "No finished runs yet — routing uses the default agent until there are a few." };
     } catch (err) { return { error: String(err.message || err) }; }
   },
 });
