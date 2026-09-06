@@ -172,7 +172,7 @@ body::before {
 @keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
 
 /* ---- Composer ---- */
-.composer { display: flex; align-items: center; gap: 10px; padding-top: 8px; }
+.composer { display: flex; align-items: flex-end; gap: 10px; padding-top: 8px; }
 .text-input {
   flex: 1; min-width: 0; background: var(--glass); border: 1px solid var(--glass-brd); color: var(--text);
   border-radius: 14px; padding: 13px 16px; font: inherit; font-size: 15px; outline: none;
@@ -180,6 +180,11 @@ body::before {
 }
 .text-input:focus { border-color: var(--cyan); box-shadow: var(--glow); }
 .text-input::placeholder { color: var(--text-dim); }
+/* The chat box is a textarea that grows with the text (JS sets height up to max). */
+textarea.text-input { resize: none; overflow-y: auto; line-height: 1.4; max-height: 160px; box-sizing: border-box; }
+/* Secret fields: masked with CSS, NOT type=password — so password managers don't
+   treat the chat box as a username field and pop up saved logins/passkeys. */
+input.secret { -webkit-text-security: disc; text-security: disc; }
 
 .mic-btn, .send-btn {
   flex: none; width: 48px; height: 48px; border-radius: 14px; cursor: pointer;

@@ -178,6 +178,13 @@
     elOrb.classList.remove("speaking", "listening");
     if (state) elOrb.classList.add(state);
   }
+  // Grow the chat box with its content (up to the CSS max-height), then scroll inside.
+  function autosizeInput() {
+    elInput.style.height = "auto";
+    elInput.style.height = Math.min(elInput.scrollHeight, 160) + "px";
+  }
+  // Every programmatic change to the box goes through here so it resizes too.
+  function setInputText(text) { elInput.value = text; autosizeInput(); }
 
   // ---- Backend call ----
   async function send(text) {
@@ -192,7 +199,7 @@
 
     busy = true;
     let willSpeak = false;
-    elInput.value = "";
+    setInputText("");
     addMessage("user", text);
     messages.push({ role: "user", content: text });
 
@@ -548,7 +555,7 @@
     if (!raw) return;
     lastSttRaw = raw; lastSttCorrected = corrected;
     if (wasHandsFree || settings.autoSend) send(corrected);
-    else elInput.value = corrected; // leave in the box to review and send manually
+    else setInputText(corrected); // leave in the box to review and send manually
   }
 
   // Android Chrome's recognizer misbehaves in continuous mode: it re-emits
@@ -601,7 +608,7 @@
       }
       const raw = pendingText();
       const corrected = Corrections ? Corrections.apply(raw) : raw;
-      elInput.value = corrected;
+      setInputText(corrected);
       lastSttRaw = raw; lastSttCorrected = corrected;
       if (raw) armSend(); // any speech (even interim) restarts the pause countdown
     };
@@ -627,7 +634,7 @@
     sessionInterim = "";
     const raw = pendingText();
     const corrected = Corrections ? Corrections.apply(raw) : raw;
-    elInput.value = corrected;
+    setInputText(corrected);
     lastSttRaw = raw; lastSttCorrected = corrected;
     if (raw) armSend();
   }
@@ -1000,8 +1007,9 @@
   if (elSurface.selectedIndex < 0) { settings.surface = "desktop"; elSurface.value = "desktop"; store.set("surface", "desktop"); }
   elSurface.addEventListener("change", () => { settings.surface = elSurface.value; store.set("surface", settings.surface); });
   $("send-btn").addEventListener("click", () => send(elInput.value));
-  elInput.addEventListener("keydown", (e) => { if (e.key === "Enter") send(elInput.value); });
-  elInput.addEventListener("input", () => { if (!elInput.value) { lastSttRaw = null; lastSttCorrected = null; } });
+  // Enter sends; Shift+Enter inserts a new line (the box grows to fit).
+  elInput.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(elInput.value); } });
+  elInput.addEventListener("input", () => { autosizeInput(); if (!elInput.value) { lastSttRaw = null; lastSttCorrected = null; } });
   elMic.addEventListener("click", toggleMic);
   $("upload-btn").addEventListener("click", () => $("upload-input").click());
   $("upload-input").addEventListener("change", (e) => { const f = e.target.files && e.target.files[0]; uploadDoc(f); e.target.value = ""; });

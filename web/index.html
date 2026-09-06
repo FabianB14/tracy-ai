@@ -18,6 +18,7 @@
       <div class="gate-title">TRACY</div>
       <div class="gate-sub">Enter your access key to continue.</div>
       <input id="gate-key" class="gate-input" type="text" autocomplete="off" spellcheck="false"
+             data-lpignore="true" data-1p-ignore data-form-type="other"
              placeholder="tracy-xxxx-xxxx-xxxx" />
       <button id="gate-enter" class="primary-btn gate-enter">Enter</button>
       <div id="gate-error" class="gate-error" aria-live="polite"></div>
@@ -94,8 +95,13 @@
           <path fill="currentColor" d="M19 12a7 7 0 0 1-14 0H3a9 9 0 0 0 8 8.94V24h2v-3.06A9 9 0 0 0 21 12h-2z"/>
         </svg>
       </button>
-      <input id="input" class="text-input" type="text" autocomplete="off"
-             placeholder="Talk to Tracy…" />
+      <!-- textarea (grows as you type; Enter sends, Shift+Enter = new line).
+           autocomplete/name/data-* hints keep password managers from treating
+           this as a login field. -->
+      <textarea id="input" class="text-input" rows="1" autocomplete="off" autocorrect="on"
+                autocapitalize="sentences" spellcheck="true" enterkeyhint="send"
+                data-lpignore="true" data-1p-ignore data-form-type="other"
+                placeholder="Talk to Tracy…"></textarea>
       <button id="send-btn" class="send-btn" aria-label="Send">
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
           <path fill="currentColor" d="M3 11l18-8-8 18-2-7-8-3z"/>
@@ -124,7 +130,8 @@
         </div>
       </div>
       <label>Access key
-        <input id="cfg-accesskey" type="password" autocomplete="off" spellcheck="false"
+        <input id="cfg-accesskey" type="text" class="secret" autocomplete="off" spellcheck="false"
+               data-lpignore="true" data-1p-ignore data-form-type="other"
                placeholder="tracy-xxxx-xxxx-xxxx" />
         <small class="hint">Your personal access key identifies you to Tracy (it's what unlocks the vault). Enter it here to sign this browser in as you — or to switch from an old shared key to your personal one.</small>
       </label>
@@ -147,7 +154,8 @@
       </label>
       <small id="cfg-push-status" class="hint"></small>
       <label>Your Claude (Anthropic) API key (optional)
-        <input id="cfg-apikey" type="password" autocomplete="off" spellcheck="false"
+        <input id="cfg-apikey" type="text" class="secret" autocomplete="off" spellcheck="false"
+               data-lpignore="true" data-1p-ignore data-form-type="other"
                placeholder="sk-ant-…  (blank = use the shared key)" />
         <small class="hint">Claude is made by Anthropic, so a "Claude key" and an "Anthropic API key" are the same thing. Add your own so usage bills your account. Stored only in this browser, sent straight to the backend. Get one at console.anthropic.com — a Claude Pro/Max subscription is <strong>not</strong> an API key.</small>
       </label>
