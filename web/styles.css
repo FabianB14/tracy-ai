@@ -265,6 +265,11 @@ body::before {
 .cfg-build { text-align: center; margin-top: 10px; font-size: 11px; opacity: .65; }
 .cfg-section { margin: 10px 0 2px; font-size: 12px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: var(--cyan-dim); border-top: 1px solid var(--glass-brd); padding-top: 12px; }
 .cfg-apps { display: flex; flex-direction: column; gap: 6px; margin: 2px 0; }
+.cfg-threads { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 2px; max-height: 240px; overflow-y: auto; }
+.thread-row { display: flex; align-items: center; gap: 8px; }
+.thread-row .thread-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.thread-row .thread-text strong { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.thread-row .ghost-btn { padding: 6px 10px; font-size: 12px; }
 #cfg-notify-status { display: block; margin-top: 6px; }
 .primary-btn, .ghost-btn {
   border-radius: 10px; padding: 10px 18px; font: inherit; font-size: 14px; cursor: pointer;

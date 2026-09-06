@@ -26,6 +26,7 @@ import { sendEmail, emailConfigured } from "./email.js";
 import { pushConfigured, getPublicKey, savePushSub, removePushSub, sendPushToUser } from "./push.js";
 import { kbEnabled, kbSearch, kbAdd, formatKnowledgeBlock, kbIngestDoc, kbReembedIfModelChanged } from "./knowledge.js";
 import { brainEnabled, formatBrainBlock, syncBrain, resetBrainEmbeddings } from "./brain.js";
+import { listThreads, getThread, saveThread, deleteThread } from "./threads.js";
 import { extractPdfText } from "./pdf.js";
 import { geminiConfigured, geminiChat } from "./gemini.js";
 import { logAnswer, getAnswerStats } from "./answerlog.js";
@@ -344,6 +345,31 @@ app.get("/whoami", requireAuth, (req, res) => {
     userId: req.authUser?.userId || null,
     role: req.authUser?.role || null,
   });
+});
+
+// ---- Saved conversations (pick up where you left off) ----
+// All scoped to the caller's userId. The client auto-saves after each exchange.
+app.get("/threads", requireAuth, async (req, res) => {
+  try { res.json({ threads: await listThreads(String(req.query.userId || "")) }); }
+  catch (err) { console.error("threads list failed:", err.message); res.status(500).json({ error: "Couldn't list conversations." }); }
+});
+app.get("/threads/:id", requireAuth, async (req, res) => {
+  try {
+    const t = await getThread(String(req.query.userId || ""), req.params.id);
+    if (!t) return res.status(404).json({ error: "Conversation not found." });
+    res.json(t);
+  } catch (err) { console.error("thread get failed:", err.message); res.status(500).json({ error: "Couldn't load that conversation." }); }
+});
+app.post("/threads", requireAuth, async (req, res) => {
+  try {
+    const { id, userId, surface, title, messages } = req.body || {};
+    if (!userId || !Array.isArray(messages)) return res.status(400).json({ error: "userId and messages required" });
+    res.json(await saveThread({ id, userId, surface, title, messages }));
+  } catch (err) { console.error("thread save failed:", err.message); res.status(500).json({ error: "Couldn't save the conversation." }); }
+});
+app.delete("/threads/:id", requireAuth, async (req, res) => {
+  try { res.json({ deleted: await deleteThread(String(req.query.userId || ""), req.params.id) }); }
+  catch (err) { console.error("thread delete failed:", err.message); res.status(500).json({ error: "Couldn't delete that conversation." }); }
 });
 
 // GET /kb/stats — how often Tracy answers from her own knowledge vs. asking

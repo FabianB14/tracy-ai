@@ -224,6 +224,7 @@
       const bubble = addMessage("tracy", reply, { tools: data.toolsUsed, markdown: true });
       willSpeak = settings.autoSpeak && !!synth && !!reply;
       speak(reply, bubble); // no-op if autoSpeak is off
+      saveThread(); // fire-and-forget: keep the conversation resumable
     } catch (err) {
       thinking.remove();
       addMessage("system", `Couldn't reach Tracy at ${settings.backendUrl}. Is the backend up? (${err.message})`);
@@ -234,6 +235,77 @@
       // speaking, her TTS onend handles the reopen instead (avoids echo).
       if (!willSpeak) maybeListen();
     }
+  }
+
+  // ---- Saved conversations (pick up where you left off) ----
+  // The current thread is auto-saved server-side after every exchange and
+  // resumed on the next load. Settings → Conversations lists past threads.
+  let threadId = store.get("threadId", null);
+  async function saveThread() {
+    if (!messages.length) return;
+    try {
+      const res = await fetch(api() + "/threads", {
+        method: "POST", headers: authHeaders(true),
+        body: JSON.stringify({ id: threadId, userId: settings.userId, surface: settings.surface, messages }),
+      });
+      if (!res.ok) return;
+      const d = await res.json();
+      if (d.id && d.id !== threadId) { threadId = d.id; store.set("threadId", threadId); }
+    } catch { /* offline — the next exchange retries */ }
+  }
+  function renderThread(t) {
+    messages = (t.messages || []).map((m) => ({ role: m.role, content: m.content }));
+    elTranscript.innerHTML = ""; elCaption.textContent = "";
+    for (const m of messages) addMessage(m.role === "user" ? "user" : "tracy", m.content, { markdown: m.role !== "user" });
+    threadId = t.id; store.set("threadId", threadId);
+    if (t.surface && t.surface !== settings.surface) { settings.surface = t.surface; store.set("surface", t.surface); const s = $("surface"); if (s) s.value = t.surface; }
+  }
+  async function resumeLastThread() {
+    if (!threadId) return false;
+    try {
+      const res = await fetch(api() + "/threads/" + encodeURIComponent(threadId) + "?userId=" + encodeURIComponent(settings.userId), { headers: authHeaders(false) });
+      if (!res.ok) { if (res.status === 404) { threadId = null; store.set("threadId", null); } return false; }
+      const t = await res.json();
+      if (!t.messages || !t.messages.length) return false;
+      renderThread(t);
+      addMessage("system", `Resumed "${t.title}" (${t.messages.length} messages). Start fresh anytime with New chat in Settings.`);
+      return true;
+    } catch { return false; }
+  }
+  function newThread() {
+    messages = []; threadId = null; store.set("threadId", null);
+    elTranscript.innerHTML = ""; elCaption.textContent = "";
+    addMessage("tracy", "New conversation. What can I help with?");
+  }
+  async function loadThreadList() {
+    const box = $("cfg-threads"); if (!box) return;
+    box.innerHTML = "<small class='hint'>Loading…</small>";
+    try {
+      const res = await fetch(api() + "/threads?userId=" + encodeURIComponent(settings.userId), { headers: authHeaders(false) });
+      const d = res.ok ? await res.json() : { threads: [] };
+      box.innerHTML = "";
+      if (!d.threads.length) { box.innerHTML = "<small class='hint'>No saved conversations yet — they save automatically as you chat.</small>"; return; }
+      for (const t of d.threads) {
+        const row = document.createElement("div"); row.className = "thread-row";
+        const when = new Date(t.updatedAt); const stamp = isNaN(when) ? "" : when.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+        row.innerHTML = `<div class="thread-text"><strong></strong><span class="hint"></span></div>
+          <button class="ghost-btn thread-open" type="button">Open</button>
+          <button class="ghost-btn thread-del" type="button" aria-label="Delete">✕</button>`;
+        row.querySelector("strong").textContent = t.title || "Conversation";
+        row.querySelector("span").textContent = `${t.count} messages · ${stamp}${t.surface ? " · " + t.surface : ""}${t.id === threadId ? " · current" : ""}`;
+        row.querySelector(".thread-open").onclick = async () => {
+          const r = await fetch(api() + "/threads/" + encodeURIComponent(t.id) + "?userId=" + encodeURIComponent(settings.userId), { headers: authHeaders(false) });
+          if (!r.ok) return;
+          renderThread(await r.json()); modal.hidden = true;
+        };
+        row.querySelector(".thread-del").onclick = async () => {
+          await fetch(api() + "/threads/" + encodeURIComponent(t.id) + "?userId=" + encodeURIComponent(settings.userId), { method: "DELETE", headers: authHeaders(false) }).catch(() => {});
+          if (t.id === threadId) { threadId = null; store.set("threadId", null); }
+          loadThreadList();
+        };
+        box.appendChild(row);
+      }
+    } catch { box.innerHTML = "<small class='hint'>Couldn't load conversations.</small>"; }
   }
 
   // ---- Connection status ----
@@ -459,11 +531,18 @@
     else elInput.value = corrected; // leave in the box to review and send manually
   }
 
+  // Android Chrome's recognizer misbehaves in continuous mode: it re-emits
+  // already-finalized phrases and later entries in e.results restate earlier
+  // text, so joining every result yields "how's how's baby baby resale". On
+  // Android we run one-phrase sessions (continuous=false; the cross-session
+  // accumulation below already reopens the mic) and read ONLY the newest result.
+  const IS_ANDROID = /android/i.test(navigator.userAgent || "");
+
   if (SR) {
     recognition = new SR();
     recognition.lang = "en-US";
     recognition.interimResults = true;
-    recognition.continuous = true; // desktop holds the stream; mobile ends per phrase
+    recognition.continuous = !IS_ANDROID; // desktop holds the stream; Android: one phrase per session
 
     recognition.onstart = () => { listening = true; elMic.classList.add("listening"); if (!speaking) setOrbState("listening"); };
     recognition.onend = () => {
@@ -481,15 +560,25 @@
       // "no-speech" / "aborted" are normal; onend handles the restart.
     };
     recognition.onresult = (e) => {
-      // e.results holds the whole current session (continuous). Rebuild final vs
-      // interim from scratch each event — finals accumulate, interim is replaced.
-      const finals = [], interims = [];
-      for (let i = 0; i < e.results.length; i++) {
-        const r = e.results[i];
-        (r.isFinal ? finals : interims).push(r[0].transcript.trim());
+      if (IS_ANDROID) {
+        // One phrase per session: the newest result IS the phrase (interim
+        // updates replace it; the final replaces it once). Never join results —
+        // on Android earlier entries are restated inside later ones.
+        const r = e.results[e.results.length - 1];
+        const t = (r && r[0] ? r[0].transcript : "").replace(/\s+/g, " ").trim();
+        if (r && r.isFinal) { sessionFinal = t; sessionInterim = ""; }
+        else { sessionInterim = t; }
+      } else {
+        // Desktop (continuous): e.results holds the whole session. Rebuild final
+        // vs interim from scratch each event — finals accumulate, interim is replaced.
+        const finals = [], interims = [];
+        for (let i = 0; i < e.results.length; i++) {
+          const r = e.results[i];
+          (r.isFinal ? finals : interims).push(r[0].transcript.trim());
+        }
+        sessionFinal = finals.join(" ").replace(/\s+/g, " ").trim();
+        sessionInterim = interims.join(" ").replace(/\s+/g, " ").trim();
       }
-      sessionFinal = finals.join(" ").replace(/\s+/g, " ").trim();
-      sessionInterim = interims.join(" ").replace(/\s+/g, " ").trim();
       const raw = pendingText();
       const corrected = Corrections ? Corrections.apply(raw) : raw;
       elInput.value = corrected;
@@ -593,6 +682,7 @@
     updatePushRow();
     loadKbStats();
     loadIdentity();
+    loadThreadList();
     showBuild();
     modal.hidden = false;
   }
@@ -888,7 +978,7 @@
   $("cfg-rate").addEventListener("input", (e) => { $("cfg-rate-val").textContent = (+e.target.value).toFixed(2); });
   $("cfg-pitch").addEventListener("input", (e) => { $("cfg-pitch-val").textContent = (+e.target.value).toFixed(2); });
   $("cfg-silence").addEventListener("input", (e) => { $("cfg-silence-val").textContent = (+e.target.value).toFixed(1) + "s"; });
-  $("cfg-clear").addEventListener("click", () => { messages = []; elTranscript.innerHTML = ""; elCaption.textContent = ""; modal.hidden = true; });
+  $("cfg-clear").addEventListener("click", () => { newThread(); modal.hidden = true; });
   $("mute-btn").addEventListener("click", (e) => {
     settings.autoSpeak = !settings.autoSpeak; store.set("autoSpeak", settings.autoSpeak);
     e.currentTarget.textContent = settings.autoSpeak ? "🔊" : "🔇";
@@ -919,6 +1009,7 @@
 
   addMessage("tracy", "Hi, I'm Tracy — Interverse's assistant. Tap the mic and talk to me, or type below.");
   pingHealth();
+  resumeLastThread(); // picks up where you left off, if there's a saved thread
 
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
 })();
