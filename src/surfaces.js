@@ -42,7 +42,7 @@ const SURFACES = {
   // Admin/owner surface — business stats for the founder (covers BabyResell).
   // Tools are additionally gated to ADMIN_USER_IDS, so this surface is safe even
   // if requested directly.
-  admin:      { prompt: "admin",      toolSets: ["babyresell_admin"] },
+  admin:      { prompt: "admin",      toolSets: ["babyresell_admin", "interverse_admin"] },
   // BabyResell customer surface — kept for the BabyResell app's own Tracy embed.
   // It's just not shown in this web app's surface picker anymore.
   babyresell: { prompt: "babyresell", toolSets: ["babyresell"] },

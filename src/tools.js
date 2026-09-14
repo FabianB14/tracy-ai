@@ -775,6 +775,94 @@ const babyresellAdminHandlers = {
 };
 
 // ---------------------------------------------------------------------------
+// Interverse platform admin — the AI conversion lane toggle
+// ---------------------------------------------------------------------------
+// Lets allow-listed admins (ADMIN_USER_IDS — Fabian/Josh) flip the INTERVERSE
+// backend's AI asset-conversion lane from chat, no redeploy. Tracy calls the
+// backend's /admin/config endpoints with the X-Admin-Key it holds server-side;
+// the same default-deny gate as the BabyResell admin tools applies here.
+//
+// Env: INTERVERSE_API_URL (e.g. https://interverse-api.onrender.com) and
+//      INTERVERSE_ADMIN_KEY (the backend's ADMIN_REGISTRATION_KEY).
+
+function interverseAdminConfigured() {
+  return Boolean(process.env.INTERVERSE_API_URL && process.env.INTERVERSE_ADMIN_KEY);
+}
+
+async function interverseAdminFetch(path, options = {}) {
+  const base = (process.env.INTERVERSE_API_URL || "").replace(/\/$/, "");
+  const res = await fetch(base + path, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      "X-Admin-Key": process.env.INTERVERSE_ADMIN_KEY,
+      ...(options.headers || {}),
+    },
+  });
+  if (res.status === 403) throw new Error("auth-failed");
+  if (!res.ok) throw new Error(`interverse returned HTTP ${res.status}`);
+  return res.json();
+}
+
+const interverseAdminSchemas = [
+  {
+    name: "get_ai_lane_status",
+    description:
+      "Check whether Interverse's AI asset-conversion lane is currently ON or " +
+      "OFF, where that setting comes from (runtime toggle vs env var vs " +
+      "default), who last changed it, and whether the backend is configured to " +
+      "reach Tracy. Use whenever an admin asks about the AI lane / AI " +
+      "conversion status.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "set_ai_conversion",
+    description:
+      "Turn Interverse's AI asset-conversion lane ON or OFF. Takes effect " +
+      "immediately (no redeploy) and overrides the env var until changed " +
+      "again. Use only when an admin explicitly asks to enable/disable AI " +
+      "conversion; confirm the change back to them with the new state.",
+    input_schema: {
+      type: "object",
+      properties: {
+        enabled: { type: "boolean", description: "true = AI lane on, false = off." },
+      },
+      required: ["enabled"],
+    },
+  },
+];
+
+async function callInterverseAdmin(fn, context) {
+  if (!isAdminUser(context)) {
+    return { error: "Platform controls are admin-only. Set ADMIN_USER_IDS to your userId to enable this." };
+  }
+  if (!interverseAdminConfigured()) {
+    return { note: "The INTERVERSE admin API isn't connected yet. Set INTERVERSE_API_URL and INTERVERSE_ADMIN_KEY on Tracy's server." };
+  }
+  try {
+    return await fn();
+  } catch (err) {
+    if (err.message === "auth-failed") return { error: "INTERVERSE rejected the admin key (check INTERVERSE_ADMIN_KEY against the backend's ADMIN_REGISTRATION_KEY)." };
+    return { error: `Couldn't reach INTERVERSE: ${err.message}.` };
+  }
+}
+
+const interverseAdminHandlers = {
+  get_ai_lane_status: (_input, context) =>
+    callInterverseAdmin(() => interverseAdminFetch("/admin/config"), context),
+  set_ai_conversion: ({ enabled } = {}, context) =>
+    callInterverseAdmin(() => {
+      // Record WHO flipped it: the access key's verified identity when
+      // present, else the self-declared userId.
+      const updatedBy = (context.authUser && context.authUser.userId) || context.userId || "tracy-admin";
+      return interverseAdminFetch("/admin/config", {
+        method: "POST",
+        body: JSON.stringify({ ai_conversion_enabled: Boolean(enabled), updated_by: `tracy:${updatedBy}` }),
+      });
+    }, context),
+};
+
+// ---------------------------------------------------------------------------
 // Tool-set registry
 // ---------------------------------------------------------------------------
 // Add a new capability area by adding an entry here, then reference it from a
@@ -783,6 +871,7 @@ const babyresellAdminHandlers = {
 export const toolSets = {
   babyresell: { schemas: babyresellSchemas, handlers: babyresellHandlers },
   babyresell_admin: { schemas: babyresellAdminSchemas, handlers: babyresellAdminHandlers },
+  interverse_admin: { schemas: interverseAdminSchemas, handlers: interverseAdminHandlers },
 };
 
 // ---------------------------------------------------------------------------

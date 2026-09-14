@@ -103,6 +103,16 @@ conversion is logged through the same training-data pipeline as chat
 (`src/logging.js`). Add a task by adding an entry to `TASKS` in
 `src/aitasks.js`; run its tests with `npm test`.
 
+### Toggling the AI lane from chat (admins)
+
+Admins on the `admin` surface (allow-listed in `ADMIN_USER_IDS`) can flip the
+INTERVERSE backend's AI conversion on and off by just asking Tracy — "turn on
+AI conversion", "is the AI lane on?" — via the `interverse_admin` tools, which
+call the backend's `/admin/config` endpoints. Instant, no redeploy; the toggle
+overrides the backend's env flag. Needs two env vars on Tracy's server:
+`INTERVERSE_API_URL` (the backend's base URL) and `INTERVERSE_ADMIN_KEY` (the
+backend's `ADMIN_REGISTRATION_KEY`).
+
 ## Logging & consent
 
 Every `/chat` exchange is recorded (`{timestamp, userId, surface, messages,
