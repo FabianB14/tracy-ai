@@ -888,6 +888,67 @@ async function callInterverseAdmin(fn, context) {
   }
 }
 
+const testKitSchemas = [
+  {
+    name: "create_test_kit",
+    description:
+      "Provision a complete cross-game TEST rig in one call: N test games " +
+      "(with API keys), linked pairwise with conversion profiles, test " +
+      "wallets WITH private keys (throwaway by design), pre-linked players, " +
+      "readable test assets, and ready-made codes — a wallet-link code per " +
+      "game plus a transfer drop-code per player. Everything expires " +
+      "together (default 1 hour). Use when an admin asks for testing data, " +
+      "test wallets, or QR codes for N games.",
+    input_schema: {
+      type: "object",
+      properties: {
+        games: { type: "number", description: "How many test games (1-4, default 2)." },
+        players_per_game: { type: "number", description: "Linked players per game (1-4, default 2)." },
+        assets_per_player: { type: "number", description: "Assets per player (1-4, default 2)." },
+        ttl_seconds: { type: "number", description: "Kit lifetime in seconds (max 3600, default 3600)." },
+      },
+    },
+  },
+  {
+    name: "get_test_kit",
+    description: "Re-fetch a test kit's full manifest (games, wallets, keys, codes) by kit_id, or list all kits when kit_id is omitted.",
+    input_schema: {
+      type: "object",
+      properties: { kit_id: { type: "string", description: "The kit id; omit to list all kits." } },
+    },
+  },
+  {
+    name: "cleanup_test_kit",
+    description: "Tear down a test kit now: deletes its games, wallets, assets, links and codes. Expired kits are also swept automatically.",
+    input_schema: {
+      type: "object",
+      properties: { kit_id: { type: "string" } },
+      required: ["kit_id"],
+    },
+  },
+];
+
+const testKitHandlers = {
+  create_test_kit: (input, context) =>
+    callInterverseAdmin(() => interverseAdminFetch("/admin/testkit", {
+      method: "POST",
+      body: JSON.stringify({
+        games: input && input.games,
+        players_per_game: input && input.players_per_game,
+        assets_per_player: input && input.assets_per_player,
+        ttl_seconds: input && input.ttl_seconds,
+      }),
+    }), context),
+  get_test_kit: ({ kit_id } = {}, context) =>
+    callInterverseAdmin(() => interverseAdminFetch(
+      kit_id ? `/admin/testkit/${encodeURIComponent(kit_id)}` : "/admin/testkits"
+    ), context),
+  cleanup_test_kit: ({ kit_id } = {}, context) =>
+    callInterverseAdmin(() => interverseAdminFetch(
+      `/admin/testkit/${encodeURIComponent(kit_id)}`, { method: "DELETE" }
+    ), context),
+};
+
 const interverseAdminHandlers = {
   get_ai_lane_status: (_input, context) =>
     callInterverseAdmin(() => interverseAdminFetch("/admin/config"), context),
@@ -912,7 +973,10 @@ const interverseAdminHandlers = {
 export const toolSets = {
   babyresell: { schemas: babyresellSchemas, handlers: babyresellHandlers },
   babyresell_admin: { schemas: babyresellAdminSchemas, handlers: babyresellAdminHandlers },
-  interverse_admin: { schemas: interverseAdminSchemas, handlers: interverseAdminHandlers },
+  interverse_admin: {
+    schemas: [...interverseAdminSchemas, ...testKitSchemas],
+    handlers: { ...interverseAdminHandlers, ...testKitHandlers },
+  },
 };
 
 // ---------------------------------------------------------------------------
