@@ -898,11 +898,21 @@ const testKitSchemas = [
       "readable test assets, and ready-made codes — a wallet-link code per " +
       "game plus a transfer drop-code per player. Everything expires " +
       "together (default 1 hour). Use when an admin asks for testing data, " +
-      "test wallets, or QR codes for N games.",
+      "test wallets, or QR codes for N games. If the admin gives you game " +
+      "ids they already registered, pass them as game_ids: the kit then " +
+      "wraps those EXISTING games (adding only test wallets/players/assets/" +
+      "codes; cleanup removes exactly those and never the games themselves), " +
+      "and their real API keys are NOT included in the manifest.",
     input_schema: {
       type: "object",
       properties: {
         games: { type: "number", description: "How many test games (1-4, default 2)." },
+        game_ids: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Existing registered game ids to wrap instead of creating test games (max 4). Overrides `games`.",
+        },
         players_per_game: { type: "number", description: "Linked players per game (1-4, default 2)." },
         assets_per_player: { type: "number", description: "Assets per player (1-4, default 2)." },
         ttl_seconds: { type: "number", description: "Kit lifetime in seconds (max 3600, default 3600)." },
@@ -934,6 +944,7 @@ const testKitHandlers = {
       method: "POST",
       body: JSON.stringify({
         games: input && input.games,
+        game_ids: input && input.game_ids,
         players_per_game: input && input.players_per_game,
         assets_per_player: input && input.assets_per_player,
         ttl_seconds: input && input.ttl_seconds,

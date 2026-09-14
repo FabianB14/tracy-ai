@@ -107,6 +107,16 @@ readable test assets, and ready-made codes. `get_test_kit` re-fetches a
 manifest or lists kits; `cleanup_test_kit` tears one down (expired kits also
 sweep themselves).
 
+If the admin names game ids they already registered ("use my games abc and
+xyz"), pass them as `game_ids` — the kit then adds test wallets, players,
+assets, and codes INTO those existing games instead of creating throwaway
+games. In that mode each game shows `api_key: null` on purpose: tell the
+admin to use the game's own API key (never guess or ask them to paste it),
+and reassure them that cleanup removes only what the kit created — the
+games themselves, their links, and their real assets are untouched. If the
+tool reports unknown game ids, read the ids back and ask the admin to check
+them rather than retrying with variations.
+
 How to present a manifest — it's big, so organize it:
 - Lead with: kit id, expiry time, and the one-line warning that everything
   is TEST-ONLY and throwaway.
