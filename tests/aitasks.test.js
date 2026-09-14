@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { TASKS, taskModel, runTask, requireServiceSecret } from "../src/aitasks.js";
 
 const GOOD_OUTPUT = {
+  accepted: true,
   model_id: "plasma_rifle",
   name: "Plasma Rifle",
   properties: { damage: 120 },
@@ -233,4 +234,26 @@ test("runTask maps upstream model-call failures to 502, never the upstream statu
     () => runTask("convert_asset", { asset: {} }, { client, model: "test-model" }),
     (err) => err.status === 502 && /model call failed/.test(err.message),
   );
+});
+
+test("checkOutput requires accepted boolean and typed v2 fields", () => {
+  const t = TASKS.convert_asset;
+  const missingAccepted = { ...GOOD_OUTPUT };
+  delete missingAccepted.accepted;
+  assert.ok(t.checkOutput(missingAccepted).some((e) => /accepted/.test(e)));
+  assert.ok(
+    t.checkOutput({ ...GOOD_OUTPUT, anim_tags: "swing_2h" }).some((e) => /anim_tags/.test(e))
+  );
+  assert.ok(
+    t.checkOutput({ ...GOOD_OUTPUT, restyled_name: 42 }).some((e) => /restyled_name/.test(e))
+  );
+  assert.deepEqual(
+    t.checkOutput({ ...GOOD_OUTPUT, restyled_name: "Dragon Sword // Mk-Neon", style_notes: "neon edges", anim_tags: ["swing_2h"] }),
+    []
+  );
+});
+
+test("checkOutput allows a refusal-shaped output", () => {
+  const refusal = { ...GOOD_OUTPUT, accepted: false, refusal_reason: "firearms banned in target world" };
+  assert.deepEqual(TASKS.convert_asset.checkOutput(refusal), []);
 });
