@@ -31,6 +31,7 @@ import { getFile, extractText } from "./documents.js";
 import { extractPdfText } from "./pdf.js";
 import { geminiConfigured, geminiChat } from "./gemini.js";
 import { logAnswer, getAnswerStats } from "./answerlog.js";
+import { runTask, taskModel, requireServiceSecret } from "./aitasks.js";
 
 // Tools whose answers are LIVE/time-sensitive — never cache these as knowledge.
 const DYNAMIC_TOOLS = new Set([
@@ -595,6 +596,39 @@ app.post("/tasks/daily", async (req, res) => {
     }
   }
   res.json({ ok: true, considered: subs.length, delivered: results.filter((r) => r.delivered).length, results });
+});
+
+// POST /ai/tasks/:task — the machine-to-machine AI task lane (see src/aitasks.js).
+// Other Interverse backends call this for structured AI jobs (first task:
+// convert_asset — cross-game asset conversion). The output is guaranteed JSON:
+// Claude is forced through a tool call and the result is validated before it's
+// returned. Auth is a shared secret, fail-closed like /tasks/daily:
+//   header  X-Service-Secret: <SERVICE_SECRET>
+app.post("/ai/tasks/:task", requireServiceSecret, async (req, res) => {
+  const { input, request_id } = req.body || {};
+  try {
+    const result = await runTask(req.params.task, input, { client: anthropic, model: taskModel() });
+
+    // Same training-data pipeline as /chat: every conversion is future
+    // fine-tuning fuel for exactly the kind of narrow task worth distilling.
+    logConversation({
+      userId: "service:interverse",
+      surface: "service:" + req.params.task,
+      messages: [{ role: "user", content: JSON.stringify(input) }],
+      reply: JSON.stringify(result.output),
+      toolsUsed: ["ai_task:" + req.params.task],
+    });
+
+    const body = { ok: true, task: req.params.task, output: result.output, model: result.model, usage: result.usage };
+    if (request_id) body.request_id = request_id;
+    res.json(body);
+  } catch (err) {
+    // Never a bare 500: 400 = caller mistake (unknown task / bad input),
+    // anything else = 502 (model call failed or returned unusable output).
+    console.error(`ai task ${req.params.task} failed:`, err.message || err);
+    const status = Number.isInteger(err.status) ? err.status : 502;
+    res.status(status).json({ ok: false, error: String(err.message || err) });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
