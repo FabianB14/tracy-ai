@@ -36,7 +36,7 @@ import { runTask, taskModel, requireServiceSecret } from "./aitasks.js";
 // Tools whose answers are LIVE/time-sensitive — never cache these as knowledge.
 const DYNAMIC_TOOLS = new Set([
   "get_babyresell_stats", "get_babyresell_activity", "get_babyresell_moderation", "get_babyresell_shipping",
-  "get_ai_lane_status", "set_ai_conversion",
+  "get_ai_lane_status", "set_ai_conversion", "set_test_kits",
   "create_test_kit", "get_test_kit", "cleanup_test_kit",
   "web_search", "web_research", "analyze_media",
   "schedule_checkin", "list_checkins", "cancel_checkin",
