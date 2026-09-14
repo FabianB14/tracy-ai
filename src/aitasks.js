@@ -42,6 +42,7 @@ export const TASKS = {
         "- Map stats onto the target game's stat keys (target_game.profile.stat_keys, else target_catalog.stat_keys, else sensible equivalents). Keep magnitudes in line with the source — no power inflation.",
         "- Describe the item's look in the target world in `style_notes` (1-2 sentences), driven by target_game.profile.art_style when given.",
         "- Tag how the item is USED in `anim_tags`, from this vocabulary: swing_1h, swing_2h, stab, shoot, throw, shield_block, cast, wear, consume, idle_glow, trail_fx. Engines map these to their own animations.",
+        "- Where the item attaches in `sockets`, from: grip_main, grip_off, back, belt, head, chest, hand_l, hand_r, feet. Where visual effects apply in `vfx` (string values only, e.g. {\"trail_color\": \"#39FF88\", \"glow\": \"medium\"}).",
         "- `model_id`: when target_catalog.items contains a close match, use it; otherwise a lowercase_snake slug of the item's own name.",
         "",
         "Acceptance (target_game.profile):",
@@ -74,6 +75,8 @@ export const TASKS = {
           restyled_name: { type: "string" },
           style_notes: { type: "string" },
           anim_tags: { type: "array", items: { type: "string" } },
+          sockets: { type: "array", items: { type: "string" } },
+          vfx: { type: "object" },
           properties: { type: "object" },
           tags: { type: "array", items: { type: "string" } },
           reasoning: { type: "string" },
@@ -105,12 +108,16 @@ export const TASKS = {
           errors.push(`${key} must be a string`);
         }
       }
-      for (const key of ["tags", "anim_tags"]) {
+      for (const key of ["tags", "anim_tags", "sockets"]) {
         if (out[key] !== undefined) {
           if (!Array.isArray(out[key]) || out[key].some((t) => typeof t !== "string")) {
             errors.push(`${key} must be an array of strings`);
           }
         }
+      }
+      if (out.vfx !== undefined) {
+        const ok = isPlainObject(out.vfx) && Object.values(out.vfx).every((v) => typeof v === "string");
+        if (!ok) errors.push("vfx must be an object of string values");
       }
       return errors;
     },

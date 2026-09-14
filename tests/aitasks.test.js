@@ -257,3 +257,13 @@ test("checkOutput allows a refusal-shaped output", () => {
   const refusal = { ...GOOD_OUTPUT, accepted: false, refusal_reason: "firearms banned in target world" };
   assert.deepEqual(TASKS.convert_asset.checkOutput(refusal), []);
 });
+
+test("checkOutput validates interchange fields (sockets, vfx)", () => {
+  const t = TASKS.convert_asset;
+  assert.deepEqual(
+    t.checkOutput({ ...GOOD_OUTPUT, sockets: ["grip_main", "back"], vfx: { trail_color: "#39FF88", glow: "medium" } }),
+    []
+  );
+  assert.ok(t.checkOutput({ ...GOOD_OUTPUT, sockets: "grip_main" }).some((e) => /sockets/.test(e)));
+  assert.ok(t.checkOutput({ ...GOOD_OUTPUT, vfx: { glow: 3 } }).some((e) => /vfx/.test(e)));
+});
