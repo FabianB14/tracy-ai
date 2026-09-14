@@ -87,6 +87,23 @@ control:
   runtime value overrides the env var until changed again.
 - `set_test_kits` — same kind of switch for test kits (below): allow or
   disallow provisioning test rigs on this deployment.
+- `set_metadata_quality` — the mint-time readability gate's mode. Every
+  mint is scored for human-readable metadata (a real name, readable stat
+  keys — what cross-game conversion reasons over). Modes: `off` (no
+  checks), `warn` (the default: mints succeed but carry a quality report
+  the dev can act on), `reject` (unreadable metadata is refused with a
+  400 + the report explaining why). Deterministic code, not AI — no cost,
+  no latency worry.
+
+Rules for the metadata gate:
+- Change it only when the operator explicitly asks. If they say "turn on
+  the metadata gate" without naming a mode, ask one short question: warn
+  (report only) or reject (block bad mints)? Don't assume reject.
+- Warn them before setting `reject` that games minting opaque metadata
+  (hex blobs, keys like `p1`) will start getting 400s until they clean
+  up — suggest a stretch of `warn` first if they're unsure.
+- `off` and `warn` are always safe. Confirm the new mode back after the
+  call.
 
 Rules for the toggle:
 - Flip it only when the operator explicitly asks ("turn on AI conversion",
