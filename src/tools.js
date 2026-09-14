@@ -849,12 +849,12 @@ const interverseAdminSchemas = [
   {
     name: "get_ai_lane_status",
     description:
-      "Check Interverse's runtime switches: whether the AI asset-conversion " +
-      "lane AND test kits are currently ON or OFF, where each setting comes " +
-      "from (runtime toggle vs env var vs default), who last changed it, and " +
-      "whether the backend is configured to reach Tracy. Use whenever an " +
-      "admin asks about the AI lane / AI conversion status or whether test " +
-      "kits are enabled.",
+      "Check Interverse's runtime switches: the AI asset-conversion lane " +
+      "(on/off), test kits (on/off), and the metadata quality gate's mode " +
+      "(off/warn/reject) — where each setting comes from (runtime toggle vs " +
+      "env var vs default), who last changed it, and whether the backend is " +
+      "configured to reach Tracy. Use whenever an admin asks about the AI " +
+      "lane, test kits, or the metadata/readability gate.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -886,6 +886,27 @@ const interverseAdminSchemas = [
         enabled: { type: "boolean", description: "true = test kits allowed, false = off." },
       },
       required: ["enabled"],
+    },
+  },
+  {
+    name: "set_metadata_quality",
+    description:
+      "Set Interverse's mint-time metadata readability gate: 'off' (no " +
+      "checks), 'warn' (default — mints succeed but carry a quality report), " +
+      "or 'reject' (unreadable metadata is refused with HTTP 400). Instant, " +
+      "no redeploy; overrides the METADATA_QUALITY_ENFORCE env var until " +
+      "changed again. Use only when an admin explicitly asks to change the " +
+      "gate; confirm the new mode back to them.",
+    input_schema: {
+      type: "object",
+      properties: {
+        mode: {
+          type: "string",
+          enum: ["off", "warn", "reject"],
+          description: "off = no checks, warn = report only, reject = block unreadable mints.",
+        },
+      },
+      required: ["mode"],
     },
   },
 ];
@@ -981,19 +1002,21 @@ const interverseAdminHandlers = {
   get_ai_lane_status: (_input, context) =>
     callInterverseAdmin(() => interverseAdminFetch("/admin/config"), context),
   set_ai_conversion: ({ enabled } = {}, context) =>
-    setRuntimeToggle("ai_conversion_enabled", enabled, context),
+    setRuntimeConfig({ ai_conversion_enabled: Boolean(enabled) }, context),
   set_test_kits: ({ enabled } = {}, context) =>
-    setRuntimeToggle("test_kits_enabled", enabled, context),
+    setRuntimeConfig({ test_kits_enabled: Boolean(enabled) }, context),
+  set_metadata_quality: ({ mode } = {}, context) =>
+    setRuntimeConfig({ metadata_quality_enforce: String(mode || "").toLowerCase() }, context),
 };
 
-function setRuntimeToggle(key, enabled, context) {
+function setRuntimeConfig(settings, context) {
   return callInterverseAdmin(() => {
     // Record WHO flipped it: the access key's verified identity when
     // present, else the self-declared userId.
     const updatedBy = (context.authUser && context.authUser.userId) || context.userId || "tracy-admin";
     return interverseAdminFetch("/admin/config", {
       method: "POST",
-      body: JSON.stringify({ [key]: Boolean(enabled), updated_by: `tracy:${updatedBy}` }),
+      body: JSON.stringify({ ...settings, updated_by: `tracy:${updatedBy}` }),
     });
   }, context);
 }
