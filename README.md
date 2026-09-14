@@ -75,6 +75,34 @@ an entry to `SURFACES` in `src/surfaces.js` and, optionally, a
 `prompts/surfaces/<name>.md` file. Core = who Tracy is; surface = what she does
 there.
 
+## AI task lane (service-to-service)
+
+Tracy isn't only a chat brain. Other Interverse backends can call her for
+**structured AI tasks** over a machine-to-machine lane — no conversation, just
+guaranteed-shape JSON in and out. First task: **cross-game asset conversion**
+(the INTERVERSE backend asks Tracy to translate an item from one game into
+another game's catalog terms).
+
+- **Endpoint**: `POST /ai/tasks/convert_asset` with header
+  `X-Service-Secret: <SERVICE_SECRET>` and body
+  `{"request_id": "...", "input": {source_game, target_game, asset, target_catalog, previous_errors}}`
+  (`request_id` and the last two input fields optional; `previous_errors`
+  carries validator rejections from a prior attempt so the retry fixes them).
+- **Response**: `200 {"ok":true, "task":"convert_asset", "output":{model_id, name,
+  properties, tags, reasoning}, "model", "usage"}`. The output shape is
+  guaranteed — Claude is forced through a tool call and the result is validated
+  before it's returned. Failures: `403 {"error":"forbidden"}` (missing/wrong
+  secret — the lane is closed unless `SERVICE_SECRET` is set), `400` (unknown
+  task or bad input), `502` (the model call failed or returned unusable output).
+- **Env**: `SERVICE_SECRET` (required, opens the lane) and `TRACY_TASK_MODEL`
+  (default `claude-haiku-4-5` — these are high-volume narrow tasks, so the
+  cheap model is the default).
+
+`/chat` is untouched — this lane has its own auth and its own route, and each
+conversion is logged through the same training-data pipeline as chat
+(`src/logging.js`). Add a task by adding an entry to `TASKS` in
+`src/aitasks.js`; run its tests with `npm test`.
+
 ## Logging & consent
 
 Every `/chat` exchange is recorded (`{timestamp, userId, surface, messages,
