@@ -789,6 +789,47 @@ function interverseAdminConfigured() {
   return Boolean(process.env.INTERVERSE_API_URL && process.env.INTERVERSE_ADMIN_KEY);
 }
 
+// Wiring report for /diag — booleans only (never the key), plus the URL's
+// host so a typo'd URL is visible at a glance. Answers "what does the
+// RUNNING process actually see?" when the toggle tools report not-connected.
+export function interverseAdminDiag() {
+  let urlHost = null;
+  try {
+    urlHost = new URL(process.env.INTERVERSE_API_URL).host;
+  } catch {
+    /* unset or not a valid URL */
+  }
+  return {
+    configured: interverseAdminConfigured(),
+    urlSet: Boolean(process.env.INTERVERSE_API_URL),
+    keySet: Boolean(process.env.INTERVERSE_ADMIN_KEY),
+    urlHost,
+  };
+}
+
+// Live check for /diag: can Tracy actually reach INTERVERSE's admin API with
+// the key she holds? Returns the lane's effective state on success.
+export async function pingInterverseAdmin() {
+  if (!interverseAdminConfigured()) {
+    return { ok: false, reason: "not-configured (set INTERVERSE_API_URL + INTERVERSE_ADMIN_KEY)" };
+  }
+  try {
+    const config = await interverseAdminFetch("/admin/config");
+    const lane = config && config.ai_conversion_enabled;
+    return {
+      ok: true,
+      aiLaneOn: lane ? lane.effective : null,
+      source: lane ? lane.source : null,
+      backendCanReachTracy: Boolean(config && config.tracy_configured),
+    };
+  } catch (err) {
+    if (err.message === "auth-failed") {
+      return { ok: false, reason: "auth-failed (INTERVERSE_ADMIN_KEY doesn't match the backend's ADMIN_REGISTRATION_KEY)" };
+    }
+    return { ok: false, reason: `unreachable: ${err.message}` };
+  }
+}
+
 async function interverseAdminFetch(path, options = {}) {
   const base = (process.env.INTERVERSE_API_URL || "").replace(/\/$/, "");
   const res = await fetch(base + path, {

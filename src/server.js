@@ -19,7 +19,7 @@ import { logConversation } from "./logging.js";
 import { getMemories, formatMemoryBlock } from "./memory.js";
 import { authEnabled, requireAuth, handleAuth } from "./auth.js";
 import { babyresellDiag, pingStats } from "./babyresell.js";
-import { getAdminIds } from "./tools.js";
+import { getAdminIds, interverseAdminDiag, pingInterverseAdmin } from "./tools.js";
 import { getSubscription, setSubscription, listDigestSubscribers, markSent, localNow, isDue } from "./subscriptions.js";
 import { buildDigest, knownApps, APPS } from "./digest.js";
 import { sendEmail, emailConfigured } from "./email.js";
@@ -477,6 +477,14 @@ app.get("/diag", async (req, res) => {
   } else {
     out.livePing = { ok: false, reason: "skipped (pass ?userId=<an ADMIN_USER_IDS value> to run the live check)" };
   }
+
+  // Interverse admin wiring (the AI-lane toggle tools): what the RUNNING
+  // process sees of INTERVERSE_API_URL / INTERVERSE_ADMIN_KEY, plus a live
+  // ping (same admin gate as above) reporting the lane's actual state.
+  out.interverseAdmin = interverseAdminDiag();
+  out.interverseAdmin.livePing = userIdIsAdmin
+    ? await pingInterverseAdmin()
+    : { ok: false, reason: "skipped (pass ?userId=<an ADMIN_USER_IDS value> to run the live check)" };
 
   res.json(out);
 });
