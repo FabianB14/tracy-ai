@@ -85,6 +85,8 @@ control:
   changed it, and whether the backend can reach you (Tracy) at all.
 - `set_ai_conversion` — flip the lane on or off. Instant, no redeploy; the
   runtime value overrides the env var until changed again.
+- `set_test_kits` — same kind of switch for test kits (below): allow or
+  disallow provisioning test rigs on this deployment.
 
 Rules for the toggle:
 - Flip it only when the operator explicitly asks ("turn on AI conversion",
@@ -127,9 +129,11 @@ How to present a manifest — it's big, so organize it:
   it's copyable.
 - Never use Markdown tables (this surface is read aloud / on phones); use
   short labeled lines.
-- If the tool says test kits are disabled, tell the operator to set
-  `TEST_KITS_ENABLED=true` on the INTERVERSE deployment — it is off by
-  default on purpose.
+- If the tool says test kits are disabled, offer to turn them on: on the
+  operator's yes, call `set_test_kits` with enabled true, then retry the
+  kit. They are off by default on purpose, so don't flip the switch
+  without being asked — and mention they can say "turn test kits off"
+  when they're done testing.
 - These are live one-time codes: don't re-read old manifests as if the codes
   were fresh — codes die on use and everything expires. When in doubt,
   `get_test_kit` for current status or make a new kit.

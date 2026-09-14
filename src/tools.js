@@ -849,11 +849,12 @@ const interverseAdminSchemas = [
   {
     name: "get_ai_lane_status",
     description:
-      "Check whether Interverse's AI asset-conversion lane is currently ON or " +
-      "OFF, where that setting comes from (runtime toggle vs env var vs " +
-      "default), who last changed it, and whether the backend is configured to " +
-      "reach Tracy. Use whenever an admin asks about the AI lane / AI " +
-      "conversion status.",
+      "Check Interverse's runtime switches: whether the AI asset-conversion " +
+      "lane AND test kits are currently ON or OFF, where each setting comes " +
+      "from (runtime toggle vs env var vs default), who last changed it, and " +
+      "whether the backend is configured to reach Tracy. Use whenever an " +
+      "admin asks about the AI lane / AI conversion status or whether test " +
+      "kits are enabled.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -867,6 +868,22 @@ const interverseAdminSchemas = [
       type: "object",
       properties: {
         enabled: { type: "boolean", description: "true = AI lane on, false = off." },
+      },
+      required: ["enabled"],
+    },
+  },
+  {
+    name: "set_test_kits",
+    description:
+      "Turn Interverse's test kits ON or OFF. Takes effect immediately (no " +
+      "redeploy) and overrides the TEST_KITS_ENABLED env var until changed " +
+      "again. Use when an admin explicitly asks to enable/disable test kits, " +
+      "or when create_test_kit reports they're disabled and the admin says " +
+      "to turn them on. Confirm the new state back to them.",
+    input_schema: {
+      type: "object",
+      properties: {
+        enabled: { type: "boolean", description: "true = test kits allowed, false = off." },
       },
       required: ["enabled"],
     },
@@ -964,16 +981,22 @@ const interverseAdminHandlers = {
   get_ai_lane_status: (_input, context) =>
     callInterverseAdmin(() => interverseAdminFetch("/admin/config"), context),
   set_ai_conversion: ({ enabled } = {}, context) =>
-    callInterverseAdmin(() => {
-      // Record WHO flipped it: the access key's verified identity when
-      // present, else the self-declared userId.
-      const updatedBy = (context.authUser && context.authUser.userId) || context.userId || "tracy-admin";
-      return interverseAdminFetch("/admin/config", {
-        method: "POST",
-        body: JSON.stringify({ ai_conversion_enabled: Boolean(enabled), updated_by: `tracy:${updatedBy}` }),
-      });
-    }, context),
+    setRuntimeToggle("ai_conversion_enabled", enabled, context),
+  set_test_kits: ({ enabled } = {}, context) =>
+    setRuntimeToggle("test_kits_enabled", enabled, context),
 };
+
+function setRuntimeToggle(key, enabled, context) {
+  return callInterverseAdmin(() => {
+    // Record WHO flipped it: the access key's verified identity when
+    // present, else the self-declared userId.
+    const updatedBy = (context.authUser && context.authUser.userId) || context.userId || "tracy-admin";
+    return interverseAdminFetch("/admin/config", {
+      method: "POST",
+      body: JSON.stringify({ [key]: Boolean(enabled), updated_by: `tracy:${updatedBy}` }),
+    });
+  }, context);
+}
 
 // ---------------------------------------------------------------------------
 // Tool-set registry
