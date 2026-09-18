@@ -21,6 +21,7 @@ import { babyresellConfigured, getStats, getActivity, getReportStats, getOpenRep
 import { geminiConfigured, webResearch, analyzeMedia } from "./gemini.js";
 import { getSubscription, setSubscription } from "./subscriptions.js";
 import { knownApps } from "./digest.js";
+import { authEnabled } from "./auth.js";
 
 // ---------------------------------------------------------------------------
 // Core tool set — available on every surface
@@ -684,9 +685,20 @@ export function getAdminIds() {
     .filter(Boolean);
 }
 
+// Admin gating. When the door is locked (AUTH_SECRET set), the identity that
+// counts is the one the access key proves — context.authUser — not the userId
+// the client sends in the request body, which any caller can type. Before this
+// split, knowing an ADMIN_USER_IDS value was enough to reach the admin tools
+// (platform toggles, test kits) if the door were ever unlocked or bypassed.
+// With auth off (local dev), fall back to the self-declared id so nothing
+// breaks on a laptop.
 function isAdminUser(context) {
   const allow = getAdminIds();
-  return allow.length > 0 && context && allow.includes(context.userId);
+  if (allow.length === 0 || !context) return false;
+  const claimed = authEnabled()
+    ? (context.authUser && context.authUser.userId)
+    : context.userId;
+  return Boolean(claimed) && allow.includes(claimed);
 }
 
 const babyresellAdminSchemas = [
