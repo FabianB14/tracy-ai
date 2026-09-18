@@ -80,18 +80,45 @@ export function installedSkills(target = skillsTarget()) {
   catch { return []; }
 }
 
+/**
+ * Argument list for `claude mcp add`. Order matters: `-e` is variadic and
+ * swallows every following word, so the server NAME must come before the
+ * env flags and `--` must close them before the command (0.1.0 put the name
+ * after -e and Claude Code rejected "tracy-tools" as a malformed variable).
+ */
+export function mcpAddArgs({ execPath, serverPath, env }) {
+  const envFlags = Object.entries({ ...env, ELECTRON_RUN_AS_NODE: "1" }).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
+  return ["mcp", "add", "-s", "user", "tracy-tools", ...envFlags, "--", execPath, serverPath];
+}
+
+/**
+ * Quote one argument for cmd.exe. On Windows the CLI is a .cmd shim, which
+ * Node can only run through the shell, and the shell gets the arguments
+ * joined with spaces and otherwise untouched — so paths with spaces and
+ * key values with special characters must be quoted here.
+ */
+export function winQuote(arg) {
+  const s = String(arg);
+  if (s !== "" && /^[A-Za-z0-9_\-./:=,@+~\\]+$/.test(s)) return s;
+  return `"${s.replace(/"/g, '\\"')}"`;
+}
+
+function claudeSync(claudePath, args, timeout = 15000) {
+  const win = process.platform === "win32";
+  const opts = { encoding: "utf8", env: { ...process.env, PATH: fixedPath() }, timeout, shell: win };
+  return spawnSync(claudePath, win ? args.map(winQuote) : args, opts);
+}
+
 /** Register (or re-register) tracy-tools with Claude Code, user scope. */
 export function registerMcp({ claudePath, execPath, serverPath, env }) {
-  const opts = { encoding: "utf8", env: { ...process.env, PATH: fixedPath() }, timeout: 15000, shell: process.platform === "win32" };
-  spawnSync(claudePath, ["mcp", "remove", "-s", "user", "tracy-tools"], opts); // idempotent; ignore result
-  const envFlags = Object.entries({ ...env, ELECTRON_RUN_AS_NODE: "1" }).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
-  const r = spawnSync(claudePath, ["mcp", "add", "-s", "user", ...envFlags, "tracy-tools", "--", execPath, serverPath], opts);
-  return { ok: r.status === 0, out: (r.stdout || "") + (r.stderr || "") };
+  claudeSync(claudePath, ["mcp", "remove", "-s", "user", "tracy-tools"]); // idempotent; ignore result
+  const r = claudeSync(claudePath, mcpAddArgs({ execPath, serverPath, env }));
+  const out = (r.stdout || "") + (r.stderr || "");
+  return { ok: r.status === 0, out: out.trim() || (r.error ? String(r.error.message) : "") };
 }
 
 export function mcpRegistered(claudePath) {
   if (!claudePath) return false;
-  const r = spawnSync(claudePath, ["mcp", "list"], { encoding: "utf8", env: { ...process.env, PATH: fixedPath() },
-    timeout: 15000, shell: process.platform === "win32" });
+  const r = claudeSync(claudePath, ["mcp", "list"]);
   return r.status === 0 && /tracy-tools/.test(r.stdout || "");
 }
