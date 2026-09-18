@@ -1,0 +1,66 @@
+# Build Tracy Desktop installers for Windows and macOS.
+# On a tag like desktop-v0.1.0 the installers are attached to a GitHub
+# Release, which is the "download Tracy" page. Manual runs just upload
+# artifacts for checking.
+name: desktop
+on:
+  push:
+    tags: ["desktop-v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: --win
+          - os: macos-latest
+            target: --mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Install (root, for the staged production deps)
+        run: npm ci --no-audit --no-fund
+      - name: Install (desktop)
+        working-directory: desktop
+        run: npm ci --no-audit --no-fund
+      - name: Desktop tests
+        working-directory: desktop
+        run: npm test
+      - name: Stage Tracy's runtime
+        working-directory: desktop
+        run: npm run stage
+      - name: Build installer
+        working-directory: desktop
+        run: npx electron-builder ${{ matrix.target }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"   # unsigned builds; see README
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tracy-desktop-${{ matrix.os }}
+          path: |
+            desktop/dist/*.exe
+            desktop/dist/*.dmg
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: installers, merge-multiple: true }
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Tracy Desktop ${{ github.ref_name }}
+          files: installers/*
+          body: |
+            Tracy Desktop — run Tracy's task runner and tools on your PC.
+            Windows: the .exe (click "More info → Run anyway" on the SmartScreen warning; the build is unsigned).
+            macOS: the .dmg (right-click → Open the first time; unsigned).
+            Setup: https://github.com/FabianB14/tracy-ai/blob/main/desktop/README.md

@@ -1,0 +1,86 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Tracy — status</title><link rel="stylesheet" href="shared.css"></head>
+<body>
+<h1>Tracy Desktop</h1>
+<p class="muted">She runs in the cloud; this PC does her work. Tasks she delegates run here with Claude Code on your subscription.</p>
+
+<h2>Runner</h2>
+<div class="row">
+  <span id="rstate" class="chip todo">stopped</span>
+  <button id="rstart" class="primary">Start runner</button>
+  <button id="rstop">Stop</button>
+  <button id="chat">Open Tracy</button>
+  <button id="settings">Settings</button>
+</div>
+<pre id="logs">(no output yet)</pre>
+
+<h2>Setup checklist</h2>
+<div id="steps"></div>
+
+<h2>Recent tasks</h2>
+<div id="tasks" class="muted">Loading…</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+async function refreshRunner() {
+  const s = await window.tracy.runnerStatus();
+  $("rstate").textContent = s.running ? `running (pid ${s.pid})` : (s.wanted ? "restarting…" : "stopped");
+  $("rstate").className = "chip " + (s.running ? "ok" : "todo");
+  const logs = await window.tracy.runnerLogs();
+  $("logs").textContent = logs.length ? logs.join("\n") : "(no output yet)";
+  $("logs").scrollTop = $("logs").scrollHeight;
+}
+function step(ok, title, detail, buttons = []) {
+  const d = document.createElement("div"); d.className = "step";
+  const chip = document.createElement("span"); chip.className = "chip " + (ok ? "ok" : "todo"); chip.textContent = ok ? "done" : "to do";
+  const what = document.createElement("div"); what.className = "what";
+  const t = document.createElement("strong"); t.textContent = title; what.append(t);
+  const p = document.createElement("span"); p.className = "muted"; p.textContent = detail; what.append(p);
+  const row = document.createElement("div"); row.className = "row";
+  for (const [label, fn, primary] of buttons) { const b = document.createElement("button"); if (primary) b.className = "primary"; b.textContent = label; b.onclick = fn; row.append(b); }
+  what.append(row); d.append(chip, what); return d;
+}
+async function refreshSetup() {
+  const c = await window.tracy.setupCheck();
+  const box = $("steps"); box.innerHTML = "";
+  box.append(step(!c.missingRunner.length, "Fill in Settings",
+    c.missingRunner.length ? `Still needed: ${c.missingRunner.join(", ")}` : "Runner settings complete",
+    [["Open Settings", () => window.tracy.openSettings()]]));
+  box.append(step(Boolean(c.claudePath), "Install Claude Code",
+    c.claudePath ? `Found ${c.claudeVersion || ""} at ${c.claudePath}` : "Not found on this PC. Install it, then come back and re-check.",
+    [["Install instructions", () => window.tracy.openExternal("https://docs.claude.com/en/docs/claude-code/setup")], ["Re-check", refreshSetup]]));
+  box.append(step(Boolean(c.claudePath), "Log Claude Code in (once)",
+    "Opens a terminal running `claude` — sign in with your Claude account, then type /exit. This is what puts tasks on your subscription.",
+    [["Open login", () => window.tracy.openLogin()]]));
+  const allSkills = c.skillsAvailable.every((s) => c.skillsInstalled.includes(s)) && c.skillsAvailable.length > 0;
+  box.append(step(allSkills, "Install the Interverse skills",
+    allSkills ? `Installed: ${c.skillsInstalled.filter((s) => c.skillsAvailable.includes(s)).join(", ")}` : `Teaches Claude Code your stack: ${c.skillsAvailable.join(", ")}`,
+    [[allSkills ? "Reinstall" : "Install skills", async () => { await window.tracy.installSkills(); refreshSetup(); }, !allSkills]]));
+  box.append(step(c.mcpRegistered, "Give Claude Code Tracy's tools (MCP)",
+    c.mcpRegistered ? "tracy-tools is registered" : (c.missingMcp.length ? `Needs in Settings: ${c.missingMcp.join(", ")}` : "Test kits, platform switches, BabyResell numbers — usable inside tasks"),
+    [[c.mcpRegistered ? "Re-register" : "Register", async () => { const r = await window.tracy.registerMcp(); if (!r.ok) alert(r.out); refreshSetup(); }, !c.mcpRegistered]]));
+}
+async function refreshTasks() {
+  const r = await window.tracy.recentTasks();
+  const box = $("tasks");
+  if (r.error) { box.textContent = `Can't read the queue: ${r.error}`; return; }
+  if (!r.tasks.length) { box.textContent = "No tasks yet. Ask Tracy: “Have the agent …”"; return; }
+  const t = document.createElement("table");
+  t.innerHTML = "<tr><th>#</th><th>Repo</th><th>Task</th><th>Status</th><th>Agent</th><th>Cost</th></tr>";
+  for (const x of r.tasks) {
+    const tr = document.createElement("tr");
+    for (const v of [x.id, x.repo, (x.instruction || "").slice(0, 80), x.status, x.agent || "", x.cost_usd != null ? `$${Number(x.cost_usd).toFixed(2)}` : ""]) {
+      const td = document.createElement("td"); td.textContent = String(v ?? ""); tr.append(td);
+    }
+    t.append(tr);
+  }
+  box.innerHTML = ""; box.append(t);
+}
+$("rstart").onclick = async () => { await window.tracy.runnerStart(); refreshRunner(); };
+$("rstop").onclick = async () => { await window.tracy.runnerStop(); refreshRunner(); };
+$("chat").onclick = () => window.tracy.openChat();
+$("settings").onclick = () => window.tracy.openSettings();
+window.tracy.onRunnerChanged(refreshRunner);
+refreshRunner(); refreshSetup(); refreshTasks();
+setInterval(refreshRunner, 5000); setInterval(refreshTasks, 30000);
+</script>
+</body></html>
