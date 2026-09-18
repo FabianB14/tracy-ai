@@ -1,7 +1,7 @@
 {
   "name": "tracy-assistant",
   "version": "0.1.0",
-  "description": "Tracy — the Interverse AI assistant (one brain, many surfaces)",
+  "description": "Tracy \u2014 the Interverse AI assistant (one brain, many surfaces)",
   "type": "module",
   "main": "src/server.js",
   "scripts": {
@@ -11,7 +11,8 @@
     "runner": "node scripts/agent-runner.js",
     "runner:setup": "node scripts/setup-runner.js",
     "native:bundle": "esbuild web/native/bridge.js --bundle --format=iife --outfile=web/native.bundle.js --minify",
-    "native:sync": "npm run native:bundle && npx cap sync"
+    "native:sync": "npm run native:bundle && npx cap sync",
+    "mcp": "node mcp/server.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",
@@ -36,5 +37,8 @@
     "@capacitor/core": "^8.4.2",
     "@capacitor/ios": "^8.4.2",
     "esbuild": "^0.28.1"
+  },
+  "bin": {
+    "tracy-tools-mcp": "./mcp/server.js"
   }
 }
