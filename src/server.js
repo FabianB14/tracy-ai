@@ -30,6 +30,7 @@ import { listThreads, getThread, saveThread, deleteThread } from "./threads.js";
 import { getFile, extractText } from "./documents.js";
 import { extractPdfText } from "./pdf.js";
 import { geminiConfigured, geminiChat } from "./gemini.js";
+import { classifyModelError, worthFallingBack } from "./apierrors.js";
 import { logAnswer, getAnswerStats } from "./answerlog.js";
 import { runTask, taskModel, requireServiceSecret } from "./aitasks.js";
 
@@ -228,7 +229,13 @@ app.post("/chat", requireAuth, async (req, res) => {
     }
 
     // Full Claude path (with tools) — only when the gate didn't answer.
+    // A provider failure here is NOT fatal: Tracy falls back to Gemini so she
+    // keeps talking when the Anthropic account is out of credit, rate-limited
+    // or down. The fallback has NO tools, so it is told to say so rather than
+    // pretend it acted — see the fallback system note below.
+    let modelFailure = null;
     if (text === null) {
+    try {
     const convo = [...cleanMessages];
     let response;
 
@@ -287,6 +294,46 @@ app.post("/chat", requireAuth, async (req, res) => {
         .map((b) => b.text)
         .join("\n");
       answerPath = "model";
+    } catch (err) {
+      // Classify once: the same object decides the fallback and, if that
+      // fails too, what the person is told.
+      modelFailure = classifyModelError(err);
+      console.error(`[model ${modelFailure.kind}]`, err);
+
+      // A key the USER supplied keeps its own message (they can fix it).
+      const hadKey = (req.headers["x-anthropic-key"] || "").trim().startsWith("sk-ant-");
+      if (hadKey && (modelFailure.kind === "auth")) {
+        return res.status(400).json({
+          error: "Your Anthropic API key was rejected. Check it in Settings, or clear it to use the shared key.",
+        });
+      }
+
+      if (geminiUsable && worthFallingBack(modelFailure.kind)) {
+        const backupSystem = systemPrompt +
+          "\n\n---\n\n## Backup mode (IMPORTANT)\n" +
+          "You are answering as a temporary backup because the primary model " +
+          "is unavailable. You have NO TOOLS right now: you cannot look up live " +
+          "numbers, read or change platform settings, create test kits, or take " +
+          "any action. If the request needs an action or live data, say plainly " +
+          "that you cannot do it until you are back to normal — never imply you " +
+          "did it, and never guess a number. Ordinary questions, explanations " +
+          "and drafting are all still fine.";
+        const g = await geminiChat(backupSystem, lastText, geminiOpts);
+        if (g) {
+          text = `_(Running on backup — ${modelFailure.message})_\n\n${g}`;
+          answerPath = "gemini-fallback";
+        }
+      }
+
+      // No fallback available (or it failed too): say what actually broke.
+      if (text === null) {
+        return res.status(modelFailure.retryable ? 503 : 400).json({
+          error: modelFailure.message,
+          kind: modelFailure.kind,
+          retryable: modelFailure.retryable,
+        });
+      }
+    }
     }
 
     // Never return an empty bubble ("(no reply)"). This can happen when a big
@@ -339,7 +386,15 @@ app.post("/chat", requireAuth, async (req, res) => {
     if (hadKey && (err?.status === 401 || err?.status === 403)) {
       return res.status(400).json({ error: "Your Anthropic API key was rejected. Check it in Settings, or clear it to use the shared key." });
     }
-    res.status(500).json({ error: "Tracy hit a snag. Try again in a moment." });
+    // Anything else that reached here (database, a tool, a bug): name what we
+    // can instead of the old catch-all "Tracy hit a snag", which was true of
+    // every failure and so told nobody anything.
+    const failure = classifyModelError(err);
+    res.status(failure.retryable ? 503 : 400).json({
+      error: failure.message,
+      kind: failure.kind,
+      retryable: failure.retryable,
+    });
   }
 });
 
