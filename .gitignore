@@ -21,3 +21,8 @@ npm-debug.log*
 .gradle/
 *.apk
 *.aab
+
+# Tracy Desktop build outputs
+desktop/node_modules/
+desktop/staged/
+desktop/dist/

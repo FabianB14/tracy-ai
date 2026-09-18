@@ -1,0 +1,39 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Tracy — settings</title><link rel="stylesheet" href="shared.css"></head>
+<body>
+<h1>Settings</h1>
+<p class="muted">Everything here stays on this PC. Secrets are stored in the system keychain where available.</p>
+<form id="f"></form>
+<label class="check"><input type="checkbox" id="startAtLogin"> Start Tracy when I sign in</label>
+<label class="check"><input type="checkbox" id="runnerAutostart"> Start the runner automatically</label>
+<div class="row" style="margin-top:16px">
+  <button class="primary" id="save">Save</button>
+  <span id="msg" class="muted"></span>
+</div>
+<script>
+(async () => {
+  const fields = await window.tracy.fields();
+  const cfg = await window.tracy.getConfig();
+  const f = document.getElementById("f");
+  for (const [key, label, secret, hint] of fields) {
+    const l = document.createElement("label"); l.textContent = label; l.htmlFor = key;
+    const i = document.createElement(key === "agentRepos" ? "textarea" : "input");
+    i.id = key; i.name = key; i.value = cfg[key] ?? "";
+    if (i.tagName === "INPUT") { i.type = secret ? "password" : "text"; i.autocomplete = "off"; i.spellcheck = false; }
+    const h = document.createElement("div"); h.className = "hint"; h.textContent = hint;
+    f.append(l, i, h);
+  }
+  document.getElementById("startAtLogin").checked = Boolean(cfg.startAtLogin);
+  document.getElementById("runnerAutostart").checked = Boolean(cfg.runnerAutostart);
+  document.getElementById("save").onclick = async (e) => {
+    e.preventDefault();
+    const out = { ...cfg };
+    for (const [key] of fields) out[key] = document.getElementById(key).value.trim();
+    out.startAtLogin = document.getElementById("startAtLogin").checked;
+    out.runnerAutostart = document.getElementById("runnerAutostart").checked;
+    await window.tracy.setConfig(out);
+    document.getElementById("msg").textContent = "Saved.";
+    setTimeout(() => { document.getElementById("msg").textContent = ""; }, 2000);
+  };
+})();
+</script>
+</body></html>

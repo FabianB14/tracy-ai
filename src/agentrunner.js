@@ -63,7 +63,10 @@ export function buildPrompt(task, repoPath) {
 export function run(cmd, args, { cwd, input } = {}) {
   return new Promise((resolve) => {
     let out = "", err = "", timedOut = false;
-    const child = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"], env: process.env });
+    // Windows: an npm-installed CLI is a `claude.cmd` shim, which spawn() can
+    // only find through the shell (PATHEXT). Args here are plain flags and the
+    // prompt goes over stdin, so shell quoting is not a concern.
+    const child = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"], env: process.env, shell: process.platform === "win32" });
     const timer = setTimeout(() => { timedOut = true; child.kill("SIGTERM"); setTimeout(() => child.kill("SIGKILL"), 5000); }, TIMEOUT_MS);
     child.stdout.on("data", (d) => { out += d; });
     child.stderr.on("data", (d) => { err += d; });

@@ -22,6 +22,10 @@ The runner uses **your own** Claude and ChatGPT logins, so tasks run on the
 subscriptions you already have — no API bills. It only ever pushes to
 `tracy/task-N` branches; `main` is never touched.
 
+> **No-terminal option:** [Tracy Desktop](../desktop/README.md) does all of
+> this from a downloadable app — runner, skills, MCP, and a settings form.
+> The steps below are the manual route.
+
 ## Before you start, have these ready
 
 1. **Tracy's database URL** — from Fabian, or Render → the Postgres →
