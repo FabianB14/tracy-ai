@@ -39,12 +39,19 @@ jobs:
         run: npx electron-builder ${{ matrix.target }} --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"   # unsigned builds; see README
+      - name: Update feed present (Windows updates in place from latest.yml)
+        if: matrix.os == 'windows-latest'
+        working-directory: desktop
+        shell: bash
+        run: test -f dist/latest.yml && cat dist/latest.yml
       - uses: actions/upload-artifact@v4
         with:
           name: tracy-desktop-${{ matrix.os }}
           path: |
             desktop/dist/*.exe
             desktop/dist/*.dmg
+            desktop/dist/*.blockmap
+            desktop/dist/latest*.yml
           if-no-files-found: error
 
   release:

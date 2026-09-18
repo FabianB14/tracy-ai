@@ -13,6 +13,9 @@ import { fileURLToPath, pathToFileURL } from "url";
 import { createConfigStore, runnerEnv, mcpEnv, missingForRunner, missingForMcp, FIELDS } from "./lib/config.js";
 import { createRunner } from "./lib/runner.js";
 import * as setup from "./lib/setup.js";
+import electronUpdater from "electron-updater";
+import { describeCheck, inPlaceUpdates, RELEASES_URL } from "./lib/updates.js";
+const { autoUpdater } = electronUpdater;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -95,6 +98,10 @@ function refreshTray() {
       ? { label: "Stop runner", click: () => runner.stop() }
       : { label: "Start runner", click: () => startRunnerChecked() },
     { type: "separator" },
+    ...(updateState.state === "available" || updateState.state === "available-manual" || updateState.state === "ready"
+      ? [{ label: updateState.state === "ready" ? `Restart to update to ${updateState.latest}` : `Update to ${updateState.latest} available…`,
+           click: openStatus }, { type: "separator" }]
+      : []),
     { label: "Quit Tracy", click: () => { runner.stop(); app.exit(0); } },
   ]));
 }
@@ -161,6 +168,48 @@ ipcMain.handle("open:chat", () => openChat());
 ipcMain.handle("open:settings", () => openSettings());
 ipcMain.handle("open:docs", () => shell.openExternal("https://github.com/FabianB14/tracy-ai/blob/main/desktop/README.md"));
 
+// ---- Updates ----
+// Feed: electron-builder's generic provider pointed at GitHub's
+// releases/latest/download redirect (see package.json "publish"), so any tag
+// name works and no API token is needed. The app only ever downloads when
+// asked; a found update is announced in the tray and the status window.
+let updateState = { state: "idle", current: app.getVersion() };
+function setUpdate(patch) {
+  updateState = { ...updateState, ...patch };
+  statusWin?.webContents.send("update:changed", updateState);
+  refreshTray();
+}
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = true;
+autoUpdater.on("download-progress", (p) => setUpdate({ state: "downloading", percent: Math.round(p.percent) }));
+autoUpdater.on("update-downloaded", (info) => setUpdate({ state: "ready", latest: info.version }));
+autoUpdater.on("error", (err) => setUpdate({ state: "error", message: `Update failed: ${err?.message || err}` }));
+
+async function checkForUpdates({ quiet = false } = {}) {
+  if (!app.isPackaged) { setUpdate(describeCheck({ current: app.getVersion(), latest: null })); return updateState; }
+  if (!quiet) setUpdate({ state: "checking", message: "Checking…" });
+  try {
+    const r = await autoUpdater.checkForUpdates();
+    const latest = r?.updateInfo?.version || null;
+    setUpdate(describeCheck({ current: app.getVersion(), latest }));
+  } catch (err) {
+    if (quiet) setUpdate({ state: "idle" });
+    else setUpdate(describeCheck({ current: app.getVersion(), error: err?.message || String(err) }));
+  }
+  return updateState;
+}
+
+ipcMain.handle("update:state", () => updateState);
+ipcMain.handle("update:check", () => checkForUpdates());
+ipcMain.handle("update:download", async () => {
+  if (!inPlaceUpdates()) { shell.openExternal(RELEASES_URL); return updateState; }
+  setUpdate({ state: "downloading", percent: 0 });
+  try { await autoUpdater.downloadUpdate(); } catch (err) { setUpdate({ state: "error", message: `Download failed: ${err?.message || err}` }); }
+  return updateState;
+});
+ipcMain.handle("update:install", () => { runner.stop(); setImmediate(() => autoUpdater.quitAndInstall(false, true)); return true; });
+ipcMain.handle("update:releases", () => shell.openExternal(RELEASES_URL));
+
 app.on("second-instance", openStatus);
 app.on("window-all-closed", () => { /* stay in the tray */ });
 
@@ -177,4 +226,7 @@ app.whenReady().then(() => {
   if (firstRun) { openSettings(); openStatus(); }
   else if (cfg.runnerAutostart && !missingForRunner(cfg).length) runner.start();
   if (!firstRun) openStatus();
+
+  setTimeout(() => checkForUpdates({ quiet: true }), 20_000);
+  setInterval(() => checkForUpdates({ quiet: true }), 6 * 60 * 60 * 1000);
 });

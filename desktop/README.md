@@ -61,6 +61,24 @@ The runner starts automatically on later launches, and the app can start
 with your sign-in (Settings). Closing windows leaves it in the tray; *Quit*
 is in the tray menu.
 
+## Updating
+
+The status window has **Check for updates** (the app also checks quietly
+on launch and every six hours). When a newer release exists:
+
+- **Windows:** *Download update* → *Restart to update*. It installs in
+  place; settings, skills, and the Claude Code login are untouched.
+- **macOS:** the button opens the download page — in-place updates need a
+  signed app, and ours is unsigned. Drag the new one over the old.
+
+Installing a newer `.exe`/`.dmg` by hand also upgrades in place, for the
+same reason: same app id, and everything personal lives outside the app
+folder.
+
+The feed is GitHub's *latest release* redirect (`releases/latest/download/
+latest.yml`), so cutting a release is the whole publish step — any tag name
+works, no tokens involved.
+
 ## How it's built
 
 - `main.js` — tray, windows, IPC. `lib/runner.js` manages the runner child

@@ -16,6 +16,16 @@
 <h2>Setup checklist</h2>
 <div id="steps"></div>
 
+<h2>Updates</h2>
+<div class="row">
+  <span id="uver" class="muted"></span>
+  <button id="ucheck">Check for updates</button>
+  <button id="udl" class="primary" hidden>Download update</button>
+  <button id="uinstall" class="primary" hidden>Restart to update</button>
+  <button id="urel" hidden>Open download page</button>
+</div>
+<p id="umsg" class="muted"></p>
+
 <h2>Recent tasks</h2>
 <div id="tasks" class="muted">Loading…</div>
 
@@ -75,6 +85,21 @@ async function refreshTasks() {
   }
   box.innerHTML = ""; box.append(t);
 }
+function renderUpdate(u) {
+  $("uver").textContent = `Tracy Desktop ${u.current}`;
+  $("umsg").textContent = u.state === "downloading" ? `Downloading… ${u.percent || 0}%` : (u.message || "");
+  $("udl").hidden = u.state !== "available";
+  $("uinstall").hidden = u.state !== "ready";
+  $("urel").hidden = u.state !== "available-manual";
+  $("ucheck").disabled = u.state === "checking" || u.state === "downloading";
+  if (u.state === "ready") $("umsg").textContent = `Version ${u.latest} is downloaded. Restart Tracy to finish updating.`;
+}
+$("ucheck").onclick = async () => renderUpdate(await window.tracy.updateCheck());
+$("udl").onclick = async () => renderUpdate(await window.tracy.updateDownload());
+$("uinstall").onclick = () => window.tracy.updateInstall();
+$("urel").onclick = () => window.tracy.openReleases();
+window.tracy.onUpdateChanged(renderUpdate);
+window.tracy.updateState().then(renderUpdate);
 $("rstart").onclick = async () => { await window.tracy.runnerStart(); refreshRunner(); };
 $("rstop").onclick = async () => { await window.tracy.runnerStop(); refreshRunner(); };
 $("chat").onclick = () => window.tracy.openChat();
