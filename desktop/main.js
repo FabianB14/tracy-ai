@@ -130,7 +130,7 @@ ipcMain.handle("setup:check", () => {
     claudeVersion: setup.claudeVersion(claudePath),
     skillsInstalled: setup.installedSkills(),
     skillsAvailable: SKILL_DIRS.flatMap((d) => { try { return fs.readdirSync(d); } catch { return []; } }),
-    mcpRegistered: setup.mcpRegistered(claudePath),
+    mcpRegistered: setup.mcpRegistered(),
     missingRunner: missingForRunner(cfg),
     missingMcp: missingForMcp(cfg),
     tracyRoot: TRACY_ROOT,
@@ -139,12 +139,10 @@ ipcMain.handle("setup:check", () => {
 ipcMain.handle("setup:openLogin", () => { setup.openLoginTerminal(); return true; });
 ipcMain.handle("setup:installSkills", () => setup.installSkills(SKILL_DIRS));
 ipcMain.handle("setup:registerMcp", () => {
-  const claudePath = setup.findClaude();
-  if (!claudePath) return { ok: false, out: "Claude Code not found — install it first." };
   const cfg = store.load();
   const missing = missingForMcp(cfg);
   if (missing.length) return { ok: false, out: `Still needed in Settings: ${missing.join(", ")}.` };
-  return setup.registerMcp({ claudePath, execPath: process.execPath, serverPath: path.join(TRACY_ROOT, "mcp", "server.js"), env: mcpEnv(cfg) });
+  return setup.registerMcp({ execPath: process.execPath, serverPath: path.join(TRACY_ROOT, "mcp", "server.js"), env: mcpEnv(cfg) });
 });
 ipcMain.handle("tasks:recent", async () => {
   const cfg = store.load();

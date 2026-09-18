@@ -80,45 +80,51 @@ export function installedSkills(target = skillsTarget()) {
   catch { return []; }
 }
 
-/**
- * Argument list for `claude mcp add`. Order matters: `-e` is variadic and
- * swallows every following word, so the server NAME must come before the
- * env flags and `--` must close them before the command (0.1.0 put the name
- * after -e and Claude Code rejected "tracy-tools" as a malformed variable).
- */
-export function mcpAddArgs({ execPath, serverPath, env }) {
-  const envFlags = Object.entries({ ...env, ELECTRON_RUN_AS_NODE: "1" }).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
-  return ["mcp", "add", "-s", "user", "tracy-tools", ...envFlags, "--", execPath, serverPath];
+/** Claude Code's user-level config; user-scope MCP servers live under mcpServers. */
+export function claudeConfigPath() {
+  return path.join(HOME, ".claude.json");
+}
+
+/** The stdio server entry Claude Code needs to launch tracy-tools. */
+export function mcpServerEntry({ execPath, serverPath, env }) {
+  return {
+    type: "stdio",
+    command: execPath,
+    args: [serverPath],
+    env: { ...env, ELECTRON_RUN_AS_NODE: "1" },
+  };
 }
 
 /**
- * Quote one argument for cmd.exe. On Windows the CLI is a .cmd shim, which
- * Node can only run through the shell, and the shell gets the arguments
- * joined with spaces and otherwise untouched — so paths with spaces and
- * key values with special characters must be quoted here.
+ * Register (or re-register) tracy-tools by writing Claude Code's config
+ * directly. 0.1.0 shelled out to `claude mcp add`, and its argument parsing
+ * rejected the call on Windows even in the documented form; the file is the
+ * source of truth the CLI writes anyway, so write it ourselves: read, merge
+ * under mcpServers, write atomically, read back. Other keys are untouched,
+ * and a config that does not parse is left alone rather than clobbered.
  */
-export function winQuote(arg) {
-  const s = String(arg);
-  if (s !== "" && /^[A-Za-z0-9_\-./:=,@+~\\]+$/.test(s)) return s;
-  return `"${s.replace(/"/g, '\\"')}"`;
+export function registerMcp({ execPath, serverPath, env, configPath = claudeConfigPath() }) {
+  let cfg = {};
+  if (fs.existsSync(configPath)) {
+    try { cfg = JSON.parse(fs.readFileSync(configPath, "utf8")); }
+    catch (e) { return { ok: false, out: `${configPath} is not valid JSON (${e.message}) — not touching it. Fix or remove the file and try again.` }; }
+    if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) return { ok: false, out: `${configPath} is not a JSON object — not touching it.` };
+  }
+  if (!cfg.mcpServers || typeof cfg.mcpServers !== "object") cfg.mcpServers = {};
+  cfg.mcpServers["tracy-tools"] = mcpServerEntry({ execPath, serverPath, env });
+  const tmp = `${configPath}.tracy-tmp`;
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, configPath);
+  return mcpRegistered(configPath)
+    ? { ok: true, out: `tracy-tools registered in ${configPath}` }
+    : { ok: false, out: `wrote ${configPath} but could not read tracy-tools back` };
 }
 
-function claudeSync(claudePath, args, timeout = 15000) {
-  const win = process.platform === "win32";
-  const opts = { encoding: "utf8", env: { ...process.env, PATH: fixedPath() }, timeout, shell: win };
-  return spawnSync(claudePath, win ? args.map(winQuote) : args, opts);
-}
-
-/** Register (or re-register) tracy-tools with Claude Code, user scope. */
-export function registerMcp({ claudePath, execPath, serverPath, env }) {
-  claudeSync(claudePath, ["mcp", "remove", "-s", "user", "tracy-tools"]); // idempotent; ignore result
-  const r = claudeSync(claudePath, mcpAddArgs({ execPath, serverPath, env }));
-  const out = (r.stdout || "") + (r.stderr || "");
-  return { ok: r.status === 0, out: out.trim() || (r.error ? String(r.error.message) : "") };
-}
-
-export function mcpRegistered(claudePath) {
-  if (!claudePath) return false;
-  const r = claudeSync(claudePath, ["mcp", "list"]);
-  return r.status === 0 && /tracy-tools/.test(r.stdout || "");
+export function mcpRegistered(configPath = claudeConfigPath()) {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    const e = cfg?.mcpServers?.["tracy-tools"];
+    return Boolean(e && e.command && Array.isArray(e.args));
+  } catch { return false; }
 }

@@ -45,9 +45,9 @@ studios, not for our own machines.
    - **Install skills** — one click. Copies `tracy-dev`,
      `interverse-platform`, `interverse-unreal`, `interverse-unity` into
      `~/.claude/skills`, so delegated work already knows the stack.
-   - **Register MCP** — one click. Runs `claude mcp add tracy-tools …`
-     pointing at the bundled server, so a task can make a test kit or flip
-     a platform switch mid-work.
+   - **Register MCP** — one click. Adds `tracy-tools` to Claude Code's
+     config (`~/.claude.json`), pointing at the bundled server, so a task
+     can make a test kit or flip a platform switch mid-work.
 
 3. **Start runner.** The tray shows it running. Then in Tracy:
 
