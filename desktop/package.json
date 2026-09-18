@@ -1,7 +1,7 @@
 {
   "name": "tracy-desktop",
   "productName": "Tracy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tracy Desktop \u2014 Interverse's assistant as a full-time agent on your PC: runs her task runner and MCP tools in the tray, sets up Claude Code for you.",
   "private": true,
   "main": "main.js",
