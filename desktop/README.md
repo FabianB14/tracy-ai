@@ -61,6 +61,28 @@ The runner starts automatically on later launches, and the app can start
 with your sign-in (Settings). Closing windows leaves it in the tray; *Quit*
 is in the tray menu.
 
+## The brain loop
+
+The Interverse brain (`brain/` in this repo) turns raw ideas into researched,
+sourced knowledge Tracy answers from. Its daily run used to need a cron entry
+on somebody's PC; Tracy Desktop runs it instead.
+
+- **When:** once a day at the time in Settings (default 07:00), as long as the
+  runner settings are complete — it needs the same database URL and GitHub
+  token. **Run now** in the status window runs it on demand.
+- **How:** the app keeps a clone of `tracy-ai` under its data folder, checks
+  out the `tracy/brain` branch (merging `main` in), and runs Claude Code
+  through `brain/loops/daily.md` exactly as `run-daily.sh` does — same scoped
+  tools, prompt over stdin, on your Claude login. The helper scripts get a
+  `node` backed by the app's own runtime and the app's staged dependencies,
+  so no Node install is needed.
+- **Where results go:** entities reach Tracy immediately (the loop's
+  `brain-sync` writes them to her database). The commits are pushed to the
+  `tracy/brain` branch, never to `main`; **Open merge page** opens the
+  compare view so the weekly review can merge them in one click.
+- **The digest** the loop ends with is shown in the status window after each
+  run, and a failed run shows why.
+
 ## Updating
 
 The status window has **Check for updates** (the app also checks quietly
