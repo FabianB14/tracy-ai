@@ -59,10 +59,18 @@ test("it exposes Tracy's operator tools with their real schemas", async () => {
   const kit = tools.find((t) => t.name === "create_test_kit");
   assert.ok(kit.inputSchema?.properties?.game_ids, "create_test_kit lost game_ids");
   assert.ok(kit.description.length > 50, "descriptions should come through");
-  // Tracy's private brain tools are NOT operator tools.
+  // Tracy's private tools are NOT operator tools; brain_note needs the database.
   for (const notHere of ["remember", "vault_get", "vault_store", "brain_note"]) {
-    assert.ok(!names.includes(notHere), `${notHere} should not be exposed`);
+    assert.ok(!names.includes(notHere), `${notHere} should not be exposed without DATABASE_URL`);
   }
+});
+
+test("brain_note is offered only when the brain (Postgres) is reachable", async () => {
+  const msgs = await talk([{ jsonrpc: "2.0", id: 6, method: "tools/list", params: {} }],
+    { env: { DATABASE_URL: "postgres://tracy-brain.example/db" } });
+  const names = (msgs.find((m) => m.id === 6)?.result?.tools || []).map((t) => t.name);
+  assert.ok(names.includes("brain_note"), "with a database, ideas can reach the brain");
+  assert.ok(!names.includes("remember") && !names.includes("vault_get"), "still not her memory or vault");
 });
 
 test("a call reaches the real handler and past the admin gate", async () => {

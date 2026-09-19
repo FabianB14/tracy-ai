@@ -42,15 +42,37 @@ test("runner env carries exactly what the runner reads", () => {
   assert.ok(!("INTERVERSE_ADMIN_KEY" in env), "the admin key never reaches the runner");
 });
 
-test("mcp env is only the three operator values", () => {
+test("mcp env is the three operator values plus the database for brain_note", () => {
   const env = mcpEnv({ interverseApiUrl: "u", interverseAdminKey: "k", adminUserIds: "me", databaseUrl: "db" });
-  assert.deepEqual(env, { INTERVERSE_API_URL: "u", INTERVERSE_ADMIN_KEY: "k", ADMIN_USER_IDS: "me" });
+  assert.deepEqual(env, { INTERVERSE_API_URL: "u", INTERVERSE_ADMIN_KEY: "k", ADMIN_USER_IDS: "me", DATABASE_URL: "db" });
+  assert.ok(!("DATABASE_URL" in mcpEnv({ interverseApiUrl: "u" })), "absent when unset");
+  assert.ok(!("GITHUB_TOKEN" in env), "the GitHub token never reaches the MCP server");
 });
 
-test("repo JSON is normalized and garbage becomes {}", () => {
+test("the repos box takes what people actually paste", () => {
+  // Exactly what Fabian pasted on first run: braces, .git suffixes, commas, newlines.
+  const pasted = `{https://github.com/FabianB14/INTERVERSE.git, https://github.com/FabianB14/InterverseSDK.git,
+https://github.com/FabianB14/interverse-engine.git,
+https://github.com/FabianB14/TitanSandbox.git,
+https://github.com/FabianB14/baby-resell-app.git}`;
+  assert.deepEqual(JSON.parse(normalizeRepos(pasted)), {
+    interverse: "https://github.com/FabianB14/INTERVERSE",
+    interversesdk: "https://github.com/FabianB14/InterverseSDK",
+    "interverse-engine": "https://github.com/FabianB14/interverse-engine",
+    titansandbox: "https://github.com/FabianB14/TitanSandbox",
+    "baby-resell-app": "https://github.com/FabianB14/baby-resell-app",
+  });
+  // Still accepts the JSON map, bare owner/repo, and rejects junk.
   assert.equal(normalizeRepos(' { "a" : "https://x" } '), '{"a":"https://x"}');
-  assert.equal(normalizeRepos("not json"), "{}");
+  assert.deepEqual(JSON.parse(normalizeRepos("FabianB14/PartOut")), { partout: "https://github.com/FabianB14/PartOut" });
+  assert.equal(normalizeRepos("not a repo at all"), "{}");
   assert.equal(normalizeRepos("[1]"), "{}");
+  assert.equal(normalizeRepos(""), "{}");
+});
+
+test("a pasted URL list satisfies the runner checklist", () => {
+  const cfg = { databaseUrl: "d", githubToken: "t", agentRepos: "https://github.com/FabianB14/INTERVERSE.git" };
+  assert.deepEqual(missingForRunner(cfg), []);
 });
 
 test("checklists name what is missing in plain words", () => {

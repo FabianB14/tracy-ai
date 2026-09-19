@@ -28,8 +28,8 @@ studios, not for our own machines.
      Database URL*. This is the task queue, so it's required.
    - A **GitHub token** — fine-grained, *Only select repositories*, with
      **Contents** and **Pull requests** read/write.
-   - The **repos** Tracy may work on, as JSON (name → GitHub URL). The
-     runner clones fresh per task and works on `tracy/task-N` branches.
+   - The **repos** Tracy may work on — paste GitHub URLs, one per line.
+     The runner clones fresh per task and works on `tracy/task-N` branches.
    - For the tools: the Interverse API URL, the admin key
      (`ADMIN_REGISTRATION_KEY`), and your Tracy admin userId.
    - Gemini key is optional (lets finished tasks be saved to her memory).
