@@ -11,7 +11,7 @@ export const FIELDS = [
   ["tracyUrl", "Tracy's URL", false, "https://tracy.onrender.com — her chat opens in a window"],
   ["databaseUrl", "Tracy's database URL", true, "Render → the Postgres → Connect → External Database URL. This IS the task queue."],
   ["githubToken", "GitHub token", true, "Fine-grained: Contents + Pull requests (read/write) on the repos below"],
-  ["agentRepos", "Repos Tracy may work on", false, 'JSON, name → GitHub URL. Example: {"interverse":"https://github.com/FabianB14/INTERVERSE"}'],
+  ["agentRepos", "Repos Tracy may work on", false, "One GitHub URL per line (or comma-separated). Names come from the repo name. Example: https://github.com/FabianB14/INTERVERSE"],
   ["geminiKey", "Gemini API key (optional)", true, "Lets finished tasks be saved to her memory"],
   ["interverseApiUrl", "Interverse API URL", false, "https://<interverse-api host> — for the platform tools"],
   ["interverseAdminKey", "Interverse admin key", true, "The backend's ADMIN_REGISTRATION_KEY"],
@@ -70,22 +70,42 @@ export function runnerEnv(cfg, { workDir }) {
 
 /** Env for the MCP server (mcp/server.js) — what Claude Code launches. */
 export function mcpEnv(cfg) {
-  return {
+  const env = {
     INTERVERSE_API_URL: cfg.interverseApiUrl || "",
     INTERVERSE_ADMIN_KEY: cfg.interverseAdminKey || "",
     ADMIN_USER_IDS: cfg.adminUserIds || "",
   };
+  // brain_note writes to Tracy's brain, which lives in her Postgres.
+  if (cfg.databaseUrl) env.DATABASE_URL = cfg.databaseUrl;
+  return env;
 }
 
-/** Accepts the JSON textarea as typed; returns compact valid JSON or "{}". */
+/**
+ * The repos box accepts what people actually paste: GitHub URLs (with or
+ * without .git, one per line, comma-separated, even wrapped in braces),
+ * bare owner/repo, or the JSON map the runner ultimately wants. Returns
+ * compact JSON of name → URL, or "{}". The name is the repo name in lower
+ * case, which is what a person says to Tracy ("...in interverse").
+ */
 export function normalizeRepos(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return "{}";
   try {
-    const obj = JSON.parse(text || "{}");
-    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return "{}";
-    return JSON.stringify(obj);
-  } catch {
-    return "{}";
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === "object" && !Array.isArray(obj)) return JSON.stringify(obj);
+  } catch { /* not JSON: parse as a list */ }
+  const out = {};
+  const urlRe = /(?:https?:\/\/|git@)?(?:www\.)?github\.com[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?(?=[\s,;{}"'\]]|$)/gi;
+  for (const m of raw.matchAll(urlRe)) {
+    out[m[2].toLowerCase()] = `https://github.com/${m[1]}/${m[2]}`;
   }
+  if (!Object.keys(out).length) {
+    // bare owner/repo tokens
+    for (const m of raw.matchAll(/(?:^|[\s,;{}"'\[])([\w.-]+)\/([\w.-]+?)(?:\.git)?(?=[\s,;{}"'\]]|$)/g)) {
+      out[m[2].toLowerCase()] = `https://github.com/${m[1]}/${m[2]}`;
+    }
+  }
+  return Object.keys(out).length ? JSON.stringify(out) : "{}";
 }
 
 /** Which required fields are still empty, for the setup checklist. */

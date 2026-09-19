@@ -14,7 +14,7 @@ can't drift from the ones Tracy uses in chat. **Nothing here calls a model.**
 Every handler is a direct HTTPS call to the INTERVERSE admin API or the
 BabyResell API, authenticated by the keys in this process's environment.
 
-## What you get (14 tools)
+## What you get (15 tools)
 
 - **Platform switches** — `get_ai_lane_status`, `set_ai_conversion`,
   `set_test_kits`, `set_metadata_quality`
@@ -22,6 +22,8 @@ BabyResell API, authenticated by the keys in this process's environment.
   `game_ids`), `get_test_kit`, `cleanup_test_kit`
 - **BabyResell** — stats, activity, moderation queue, shipping backlog,
   plus the listing helpers
+- **`brain_note`** — send an idea to the Interverse brain's inbox from
+  wherever you're working (needs `DATABASE_URL`, Tracy's Postgres)
 
 Deliberately **not** exposed: Tracy's memory, vault, and knowledge tools.
 Those belong to her brain; your desktop agent has its own.
@@ -42,6 +44,7 @@ Those belong to her brain; your desktop agent has its own.
    INTERVERSE_API_URL=https://<your interverse-api host>
    INTERVERSE_ADMIN_KEY=<the backend's ADMIN_REGISTRATION_KEY>
    ADMIN_USER_IDS=<your Tracy admin userId>
+   DATABASE_URL=<optional: Tracy's Postgres, enables brain_note>
    BABYRESELL_API_URL=<optional, for the BabyResell tools>
    BABYRESELL_ADMIN_KEY=<optional>
    ```
