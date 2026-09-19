@@ -19,7 +19,7 @@ export const FIELDS = [
 ];
 
 export const SECRET_KEYS = FIELDS.filter(([, , secret]) => secret).map(([k]) => k);
-export const DEFAULTS = { tracyUrl: "", agentRepos: "{}", startAtLogin: true, runnerAutostart: true };
+export const DEFAULTS = { tracyUrl: "", agentRepos: "{}", startAtLogin: true, runnerAutostart: true, brainEnabled: true, brainRunAt: "07:00" };
 
 export function createConfigStore({ dir, encrypt = null, decrypt = null }) {
   const file = path.join(dir, "config.json");
@@ -64,6 +64,13 @@ export function runnerEnv(cfg, { workDir }) {
     AGENT_WORKDIR: workDir,
     AGENT_RUNNER_ID: `tracy-desktop@${cfg.adminUserIds || "local"}`,
   };
+  if (cfg.geminiKey) env.GEMINI_API_KEY = cfg.geminiKey;
+  return env;
+}
+
+/** Env for the brain's daily loop: the queue/db, the GitHub token for the clone, Gemini for embeddings. */
+export function brainEnv(cfg) {
+  const env = { DATABASE_URL: cfg.databaseUrl || "", GITHUB_TOKEN: cfg.githubToken || "" };
   if (cfg.geminiKey) env.GEMINI_API_KEY = cfg.geminiKey;
   return env;
 }

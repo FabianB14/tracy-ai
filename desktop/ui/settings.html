@@ -5,6 +5,8 @@
 <form id="f"></form>
 <label class="check"><input type="checkbox" id="startAtLogin"> Start Tracy when I sign in</label>
 <label class="check"><input type="checkbox" id="runnerAutostart"> Start the runner automatically</label>
+<label class="check"><input type="checkbox" id="brainEnabled"> Run the brain's research loop daily at <input type="time" id="brainRunAt" style="width:auto;margin-left:6px"></label>
+<div class="hint">Needs the database URL and GitHub token above. Results go to the <code>tracy/brain</code> branch; entities reach Tracy the same morning.</div>
 <div class="row" style="margin-top:16px">
   <button class="primary" id="save">Save</button>
   <span id="msg" class="muted"></span>
@@ -24,12 +26,16 @@
   }
   document.getElementById("startAtLogin").checked = Boolean(cfg.startAtLogin);
   document.getElementById("runnerAutostart").checked = Boolean(cfg.runnerAutostart);
+  document.getElementById("brainEnabled").checked = cfg.brainEnabled !== false;
+  document.getElementById("brainRunAt").value = cfg.brainRunAt || "07:00";
   document.getElementById("save").onclick = async (e) => {
     e.preventDefault();
     const out = { ...cfg };
     for (const [key] of fields) out[key] = document.getElementById(key).value.trim();
     out.startAtLogin = document.getElementById("startAtLogin").checked;
     out.runnerAutostart = document.getElementById("runnerAutostart").checked;
+    out.brainEnabled = document.getElementById("brainEnabled").checked;
+    out.brainRunAt = document.getElementById("brainRunAt").value || "07:00";
     await window.tracy.setConfig(out);
     document.getElementById("msg").textContent = "Saved.";
     setTimeout(() => { document.getElementById("msg").textContent = ""; }, 2000);

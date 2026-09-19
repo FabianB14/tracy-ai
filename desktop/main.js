@@ -10,7 +10,8 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, safeStorag
 import path from "path";
 import fs from "fs";
 import { fileURLToPath, pathToFileURL } from "url";
-import { createConfigStore, runnerEnv, mcpEnv, missingForRunner, missingForMcp, FIELDS } from "./lib/config.js";
+import { createConfigStore, runnerEnv, mcpEnv, brainEnv, missingForRunner, missingForMcp, FIELDS } from "./lib/config.js";
+import { createBrainLoop } from "./lib/brain.js";
 import { createRunner } from "./lib/runner.js";
 import * as setup from "./lib/setup.js";
 import electronUpdater from "electron-updater";
@@ -30,7 +31,7 @@ const ICON = path.join(__dirname, "build", "icon.png");
 if (!app.requestSingleInstanceLock()) app.quit();
 
 let tray = null, statusWin = null, settingsWin = null, chatWin = null;
-let store, runner;
+let store, runner, brain;
 
 function userDir() { return app.getPath("userData"); }
 
@@ -49,6 +50,18 @@ function makeRunner() {
     tracyRoot: TRACY_ROOT,
     envFn: () => ({ ...runnerEnv(store.load(), { workDir: path.join(userDir(), "agent-work") }), PATH: setup.fixedPath() }),
     onChange: () => { refreshTray(); statusWin?.webContents.send("runner:changed"); },
+  });
+}
+
+function makeBrain() {
+  return createBrainLoop({
+    execPath: process.execPath,
+    tracyRoot: TRACY_ROOT,
+    workDir: path.join(userDir(), "brain-work"),
+    findClaude: setup.findClaude,
+    envFn: () => brainEnv(store.load()),
+    pathFn: setup.fixedPath,
+    onChange: () => { statusWin?.webContents.send("brain:changed"); refreshTray(); },
   });
 }
 
@@ -88,7 +101,8 @@ function openChat() {
 function refreshTray() {
   if (!tray) return;
   const s = runner.status();
-  tray.setToolTip(`Tracy — runner ${s.running ? "running" : "stopped"}`);
+  const b = brain ? brain.status() : { running: false };
+  tray.setToolTip(`Tracy — runner ${s.running ? "running" : "stopped"}${b.running ? ", brain loop running" : ""}`);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "Open Tracy", click: openChat },
     { label: "Status & setup", click: openStatus },
@@ -163,6 +177,9 @@ ipcMain.handle("tasks:recent", async () => {
     return { error: String(err.message || err) };
   }
 });
+ipcMain.handle("brain:status", () => brain.status());
+ipcMain.handle("brain:run", () => brain.runOnce({ reason: "manual" }));
+ipcMain.handle("brain:openMerge", () => shell.openExternal(brain.status().compareUrl));
 ipcMain.handle("open:external", (_e, url) => shell.openExternal(url));
 ipcMain.handle("open:chat", () => openChat());
 ipcMain.handle("open:settings", () => openSettings());
@@ -216,6 +233,7 @@ app.on("window-all-closed", () => { /* stay in the tray */ });
 app.whenReady().then(() => {
   store = makeStore();
   runner = makeRunner();
+  brain = makeBrain();
   const img = nativeImage.createFromPath(ICON).resize({ width: 18, height: 18 });
   tray = new Tray(img);
   tray.on("click", openStatus);
@@ -226,6 +244,14 @@ app.whenReady().then(() => {
   if (firstRun) { openSettings(); openStatus(); }
   else if (cfg.runnerAutostart && !missingForRunner(cfg).length) runner.start();
   if (!firstRun) openStatus();
+
+  // Brain loop: once a day at the configured time, only when the runner
+  // settings are complete (it needs the same database URL and token).
+  setInterval(() => {
+    const c = store.load();
+    if (missingForRunner(c).length) return;
+    brain.tick({ enabled: c.brainEnabled !== false, runAt: c.brainRunAt || "07:00" });
+  }, 60_000);
 
   setTimeout(() => checkForUpdates({ quiet: true }), 20_000);
   setInterval(() => checkForUpdates({ quiet: true }), 6 * 60 * 60 * 1000);

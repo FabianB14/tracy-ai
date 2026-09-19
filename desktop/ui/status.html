@@ -16,6 +16,15 @@
 <h2>Setup checklist</h2>
 <div id="steps"></div>
 
+<h2>Brain loop</h2>
+<p class="muted">Ideas you and Josh note go into the brain's inbox; this runs the nightly research on them here, on your subscription, and pushes the results to the <code>tracy/brain</code> branch.</p>
+<div class="row">
+  <span id="bstate" class="chip todo">never run</span>
+  <button id="brun" class="primary">Run now</button>
+  <button id="bmerge">Open merge page</button>
+</div>
+<pre id="bdigest">(no digest yet)</pre>
+
 <h2>Updates</h2>
 <div class="row">
   <span id="uver" class="muted"></span>
@@ -85,6 +94,23 @@ async function refreshTasks() {
   }
   box.innerHTML = ""; box.append(t);
 }
+async function refreshBrain() {
+  const b = await window.tracy.brainStatus();
+  const lr = b.lastRun;
+  $("bstate").textContent = b.running ? "running…" : (lr ? (lr.ok ? `last run ${new Date(lr.at).toLocaleString()}` : "last run failed") : "never run");
+  $("bstate").className = "chip " + (b.running ? "ok" : (lr && lr.ok ? "ok" : "todo"));
+  $("brun").disabled = b.running;
+  if (b.running) $("bdigest").textContent = b.log.join("\n") || "starting…";
+  else if (lr && lr.ok) $("bdigest").textContent = (lr.digest || "(no digest in the output)") + (lr.committed ? "\n\n(changes pushed — merge them from the merge page during the weekly review)" : "\n\n(nothing new to commit)");
+  else if (lr) $("bdigest").textContent = lr.error + "\n\n" + b.log.join("\n");
+  else $("bdigest").textContent = "(no digest yet)";
+  $("bdigest").scrollTop = $("bdigest").scrollHeight;
+}
+$("brun").onclick = async () => { window.tracy.brainRun(); setTimeout(refreshBrain, 300); };
+$("bmerge").onclick = () => window.tracy.brainOpenMerge();
+window.tracy.onBrainChanged(refreshBrain);
+refreshBrain(); setInterval(refreshBrain, 5000);
+
 function renderUpdate(u) {
   $("uver").textContent = `Tracy Desktop ${u.current}`;
   $("umsg").textContent = u.state === "downloading" ? `Downloading… ${u.percent || 0}%` : (u.message || "");
