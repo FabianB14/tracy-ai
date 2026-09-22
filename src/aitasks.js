@@ -164,7 +164,7 @@ export async function runTask(taskName, input, { client, model }) {
   if (errors.length > 0) {
     throw httpError(502, `model output failed validation: ${errors.join("; ")}`);
   }
-  return { output: block.input, model, usage: response.usage };
+  return { output: block.input, model: response.model || model, usage: response.usage };
 }
 
 // ---- Auth ----

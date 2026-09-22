@@ -30,6 +30,7 @@ import { listThreads, getThread, saveThread, deleteThread } from "./threads.js";
 import { getFile, extractText } from "./documents.js";
 import { extractPdfText } from "./pdf.js";
 import { geminiConfigured, geminiChat } from "./gemini.js";
+import { groqDiag, withGroqFallback } from "./groq.js";
 import { classifyModelError, worthFallingBack } from "./apierrors.js";
 import { logAnswer, getAnswerStats } from "./answerlog.js";
 import { runTask, taskModel, requireServiceSecret } from "./aitasks.js";
@@ -137,7 +138,10 @@ app.post("/chat", requireAuth, async (req, res) => {
     // account. It is used only for this request and never logged. Falls back to
     // the shared server key when absent.
     const byok = (req.headers["x-anthropic-key"] || "").trim();
-    const client = byok.startsWith("sk-ant-") ? new Anthropic({ apiKey: byok }) : anthropic;
+    const client = withGroqFallback(
+      byok.startsWith("sk-ant-") ? new Anthropic({ apiKey: byok }) : anthropic,
+      { byok: byok.startsWith("sk-ant-") },
+    );
 
     // Bring-your-own Gemini key: an app (e.g. PartOut, where each user has their
     // own Gemini key) can send X-Gemini-Key so Gemini generation bills THAT
@@ -229,9 +233,9 @@ app.post("/chat", requireAuth, async (req, res) => {
     }
 
     // Full Claude path (with tools) — only when the gate didn't answer.
-    // A provider failure here is NOT fatal: Tracy falls back to Gemini so she
+    // Claude failures try Groq within the same tool loop, then Gemini so Tracy
     // keeps talking when the Anthropic account is out of credit, rate-limited
-    // or down. The fallback has NO tools, so it is told to say so rather than
+    // or down. The final Gemini fallback has NO tools and must say so rather than
     // pretend it acted — see the fallback system note below.
     let modelFailure = null;
     if (text === null) {
@@ -293,7 +297,8 @@ app.post("/chat", requireAuth, async (req, res) => {
         .filter((b) => b.type === "text")
         .map((b) => b.text)
         .join("\n");
-      answerPath = "model";
+      answerPath = client.provider === "groq" ? "groq-fallback" : "model";
+      if (client.provider === "groq" && text) text = `_(Running on Groq backup)_\n\n${text}`;
     } catch (err) {
       // Classify once: the same object decides the fallback and, if that
       // fails too, what the person is told.
@@ -523,6 +528,7 @@ app.get("/diag", async (req, res) => {
     youPassedUserId: userId || null,
     userIdIsAdmin,
     babyresell: br,
+    modelFallback: groqDiag(),
   };
 
   // Only ping live if the caller proved they're an allow-listed admin AND the
@@ -672,7 +678,7 @@ app.post("/tasks/daily", async (req, res) => {
 app.post("/ai/tasks/:task", requireServiceSecret, async (req, res) => {
   const { input, request_id } = req.body || {};
   try {
-    const result = await runTask(req.params.task, input, { client: anthropic, model: taskModel() });
+    const result = await runTask(req.params.task, input, { client: withGroqFallback(anthropic), model: taskModel() });
 
     // Same training-data pipeline as /chat: every conversion is future
     // fine-tuning fuel for exactly the kind of narrow task worth distilling.
