@@ -211,3 +211,41 @@ node scripts/run-personality-tests.js   # writes personality-test-results.md
   volume grows.
 
 Docs: https://docs.claude.com/en/api/overview
+
+## Claude fallback with Groq's free plan
+
+Set `GROQ_API_KEY` in the server environment (Render service `tracy`) using a
+[Groq Free Plan key](https://console.groq.com/keys). Optionally set `GROQ_MODEL`;
+the default is `llama-3.3-70b-versatile`. No dependency or Anthropic SDK upgrade
+is needed. Keep the key out of browser code and version control. Unset it to
+turn this fallback off. Restart/redeploy after changing the environment.
+
+Claude remains primary. On model-call failures (including exhausted credit,
+rate limits and outages), Groq resumes the existing chat tool loop with completed
+tool results. It uses the same surface tool handlers and authorization gates.
+The switch lasts for that request; the next request tries Claude again. Rejected
+user-supplied Anthropic keys and oversized requests retain their existing errors.
+If Groq is unavailable, the existing Gemini text backup remains available when
+configured. Existing knowledge-base and PartOut Gemini-first routing is unchanged.
+
+`/ai/tasks/:task` also falls back to Groq, preserves forced-tool output validation
+and the service-secret gate, and reports the actual response model. It never
+substitutes a text-only Gemini answer for a structured task result.
+
+Chat responses identify Groq backup and use `path: "groq-fallback"`; these answers
+are excluded from knowledge caching. `/diag` reports `modelFallback.configured`,
+`model` and `timeoutMs` without exposing credentials. Requests have a 20-second
+Groq timeout, with no automatic Groq retries. Images, documents and Anthropic-only
+server-tool history bypass this text-model fallback rather than losing content;
+Gemini may still handle them. Anthropic built-in web search is not available to
+Groq, though configured local `web_research` tools remain available.
+
+The free plan has [usage limits](https://console.groq.com/docs/rate-limits), not
+unlimited service. Verify your account is on the Free Plan; the integration does
+not enforce account billing settings. Prompts and tool results are sent to Groq
+only when fallback is attempted. Use a provider/account appropriate for your data.
+
+Validation: `node --test "tests/*.test.js"`. The Groq tests mock both providers,
+exercise failover between tool rounds, reject malformed tool calls, and cover the
+structured task lane without making billable model calls. A live smoke test
+requires your server-side Groq key.
