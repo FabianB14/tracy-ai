@@ -30,7 +30,8 @@ import { listThreads, getThread, saveThread, deleteThread } from "./threads.js";
 import { getFile, extractText } from "./documents.js";
 import { extractPdfText } from "./pdf.js";
 import { geminiConfigured, geminiChat } from "./gemini.js";
-import { groqDiag, withGroqFallback } from "./groq.js";
+import { groqDiag, groqFailureMessage, withGroqFallback } from "./groq.js";
+import { canAnswerFromKnowledge, cleanBackupHistory, stripBackupBanner } from "./chatpolicy.js";
 import { classifyModelError, worthFallingBack } from "./apierrors.js";
 import { logAnswer, getAnswerStats } from "./answerlog.js";
 import { runTask, taskModel, requireServiceSecret } from "./aitasks.js";
@@ -39,7 +40,7 @@ import { runTask, taskModel, requireServiceSecret } from "./aitasks.js";
 const DYNAMIC_TOOLS = new Set([
   "get_babyresell_stats", "get_babyresell_activity", "get_babyresell_moderation", "get_babyresell_shipping",
   "get_ai_lane_status", "set_ai_conversion", "set_test_kits", "set_metadata_quality",
-  "create_test_kit", "get_test_kit", "cleanup_test_kit",
+  "create_test_kit", "get_test_kit", "cleanup_test_kit", "register_interverse_game",
   "web_search", "web_research", "analyze_media",
   "schedule_checkin", "list_checkins", "cancel_checkin",
   "vault_store", "vault_list", "vault_get", "vault_delete",
@@ -118,7 +119,7 @@ app.post("/chat", requireAuth, async (req, res) => {
     // Sanitize: Anthropic's API rejects turns with empty content (e.g. an app
     // whose assistant turn was an image with no text). Drop them rather than
     // 500 — consecutive same-role turns are fine with the API.
-    const cleanMessages = messages.filter((m) => {
+    const cleanMessages = cleanBackupHistory(messages).filter((m) => {
       if (!m) return false;
       if (typeof m.content === "string") return m.content.trim().length > 0;
       if (Array.isArray(m.content)) return m.content.length > 0;
@@ -218,10 +219,10 @@ app.post("/chat", requireAuth, async (req, res) => {
     const CHEAP_T = Number(process.env.KB_ANSWER_THRESHOLD || 0.88);
     // Gemini gets the user's own key (if they sent one) so generation bills them.
     const geminiOpts = { apiKey: byoGemini || undefined, history: cleanMessages };
-    if (kbEnabled() && topScore >= DIRECT_T) {
+    if (canAnswerFromKnowledge(resolved.id) && kbEnabled() && topScore >= DIRECT_T) {
       text = kbHits[0].content;
       answerPath = "kb-direct";
-    } else if (kbEnabled() && topScore >= CHEAP_T && geminiUsable) {
+    } else if (canAnswerFromKnowledge(resolved.id) && kbEnabled() && topScore >= CHEAP_T && geminiUsable) {
       const g = await geminiChat(systemPrompt, lastText, geminiOpts);
       if (g) { text = g; answerPath = "kb-gemini"; }
     } else if (resolved.id === "carparts" && geminiUsable) {
@@ -325,7 +326,7 @@ app.post("/chat", requireAuth, async (req, res) => {
           "and drafting are all still fine.";
         const g = await geminiChat(backupSystem, lastText, geminiOpts);
         if (g) {
-          text = `_(Running on backup — ${modelFailure.message})_\n\n${g}`;
+          text = `_(Running on backup — ${client.fallbackFailure ? groqFailureMessage(client.fallbackFailure.kind) : modelFailure.message})_\n\n${stripBackupBanner(g)}`;
           answerPath = "gemini-fallback";
         }
       }
@@ -376,7 +377,7 @@ app.post("/chat", requireAuth, async (req, res) => {
     // forget so it never delays the response. Both the full Claude path and the
     // PartOut Gemini-first path produce fresh answers worth remembering.
     if ((answerPath === "model" || answerPath === "gemini-first") &&
-        kbEnabled() && lastText && text && text.length >= 40 &&
+        canAnswerFromKnowledge(resolved.id) && kbEnabled() && lastText && text && text.length >= 40 &&
         !toolsUsed.some((t) => DYNAMIC_TOOLS.has(t))) {
       // Car-repair knowledge is universal (a 2015 Civic alternator R&R is the same
       // for everyone), so save it globally; other answers stay scoped to the user.

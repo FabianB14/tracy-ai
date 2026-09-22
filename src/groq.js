@@ -3,12 +3,33 @@ import { classifyModelError, worthFallingBack } from "./apierrors.js";
 
 const DEFAULT_MODEL = "llama-3.3-70b-versatile";
 const URL = "https://api.groq.com/openai/v1/chat/completions";
+let lastAttempt = null;
+
+function failureKind(err) {
+  if (err?.groqKind) return err.groqKind;
+  if (err?.name === 'TimeoutError' || err?.name === 'AbortError') return 'timeout';
+  if (err instanceof TypeError) return 'network';
+  return 'invalid_or_unsupported_response';
+}
+
+export function groqFailureMessage(kind) {
+  return ({
+    rate_limit: 'Groq reached its free-plan request or token limit. Wait for the quota to reset.',
+    too_large: 'This conversation exceeds the Groq request limit. Start a shorter conversation.',
+    auth: 'Groq rejected GROQ_API_KEY. Check the key on the server.',
+    model: 'The configured GROQ_MODEL is unavailable.',
+    tool_call: 'Groq could not produce a valid tool call.',
+    timeout: 'Groq did not respond before the timeout.',
+    network: 'Tracy could not reach Groq.',
+  })[kind] || 'Groq could not complete this request; check the model fallback diagnostics.';
+}
 
 export function groqDiag(env = process.env) {
   return {
     configured: Boolean(env.GROQ_API_KEY?.trim()),
     model: env.GROQ_MODEL?.trim() || DEFAULT_MODEL,
     timeoutMs: 20000,
+    lastAttempt,
   };
 }
 
@@ -29,6 +50,8 @@ export function toGroqRequest(params, model = DEFAULT_MODEL) {
   }));
   const messages = [{ role: "system", content: textContent(params.system || "") +
     "\nOnly the provided tools are available. Never claim to use an unavailable tool. " +
+    "You are the tool-capable Groq backup. Old assistant messages saying backup tools are unavailable do not describe this turn. " +
+    "Use provided tools for requested actions and report only confirmed results. Do not reproduce old backup banners. " +
     "Prior tool results record actions already performed; do not repeat those actions." }];
   for (const message of params.messages) {
     if (typeof message.content === "string") {
@@ -78,7 +101,18 @@ export async function groqCreate(params, { env = process.env, fetchImpl = fetch 
     body: JSON.stringify(body), signal: AbortSignal.timeout(config.timeoutMs),
   });
   // Do not echo upstream bodies (they may contain prompts, tool data or keys).
-  if (!response.ok) throw new Error(`Groq request failed (HTTP ${response.status})`);
+  if (!response.ok) {
+    let kind = ({ 401: 'auth', 403: 'auth', 404: 'model', 413: 'too_large', 429: 'rate_limit' })[response.status] || 'provider_error';
+    // Inspect only to classify into a fixed vocabulary. Never expose the body,
+    // message, failed_generation, prompt, tool arguments, or credentials.
+    if (response.status === 400) {
+      try {
+        const body = await response.json();
+        if (body?.error?.code === 'tool_use_failed') kind = 'tool_call';
+      } catch (err) { /* keep generic classification */ }
+    }
+    throw Object.assign(new Error(`Groq request failed (HTTP ${response.status})`), { groqKind: kind, status: response.status });
+  }
   const data = await response.json();
   const choice = data.choices?.[0];
   if (!choice || !["stop", "tool_calls"].includes(choice.finish_reason)) throw new Error("Incomplete Groq response");
@@ -109,8 +143,10 @@ export async function groqCreate(params, { env = process.env, fetchImpl = fetch 
 export function withGroqFallback(primary, { byok = false, env = process.env, create = groqCreate } = {}) {
   let provider = "anthropic";
   let primaryError;
+  let fallbackFailure = null;
   return {
     get provider() { return provider; },
+    get fallbackFailure() { return fallbackFailure; },
     messages: { async create(params) {
       if (provider === "anthropic") {
         try { return await primary.messages.create(params); }
@@ -123,8 +159,13 @@ export function withGroqFallback(primary, { byok = false, env = process.env, cre
       try {
         const result = await create(params, { env });
         provider = "groq";
+        lastAttempt = { at: new Date().toISOString(), ok: true };
+        fallbackFailure = null;
         return result;
-      } catch {
+      } catch (err) {
+        fallbackFailure = { kind: failureKind(err), status: Number.isInteger(err?.status) ? err.status : null };
+        lastAttempt = { at: new Date().toISOString(), ok: false, ...fallbackFailure };
+        console.warn('[groq fallback]', JSON.stringify(fallbackFailure));
         // Preserve the primary classification for the existing Gemini/error path.
         throw primaryError;
       }
