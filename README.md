@@ -249,3 +249,28 @@ Validation: `node --test "tests/*.test.js"`. The Groq tests mock both providers,
 exercise failover between tool rounds, reject malformed tool calls, and cover the
 structured task lane without making billable model calls. A live smoke test
 requires your server-side Groq key.
+
+### Game registration from Admin chat
+
+Authenticated Interverse admins can ask `register_interverse_game` to register a
+real game, including when Groq is answering. Provide the game ID/name, developer
+and studio. This tool requires `INTERVERSE_API_URL`, `INTERVERSE_ADMIN_KEY`,
+`DATABASE_URL` and `VAULT_SECRET`. The issued game key goes directly into the
+operator's encrypted vault; it is never returned to the model or included in the
+registration reply. Missing/unhealthy storage blocks registration before the
+write. If registration succeeds but storage fails, the reply requires operator
+recovery and forbids automatic re-registration. Duplicate/uncertain writes are
+not retried. No license, mint, transfer, or production wallet is created.
+
+Use the Admin surface with a personal access key bound to an `ADMIN_USER_IDS`
+identity. Admin replies always reach the live model/tool path instead of replaying
+cached knowledge answers. Old backup banners are removed from assistant history;
+Groq is explicitly told it has the currently supplied tools. Gemini remains a
+text-only final fallback and cannot perform registrations.
+
+`/diag` now reports `interverseAdmin.registrationStorageReady` and a process-local
+`modelFallback.lastAttempt` (time, success, or fixed error category/HTTP status).
+These fields contain no keys, prompts, tool data or provider error bodies. If a
+Groq request fails, the text backup identifies that failure instead of attributing
+every failure solely to Claude credit. `lastAttempt` resets at restart and refers
+to the latest attempt across the service, not a particular user.

@@ -22,6 +22,8 @@ import { geminiConfigured, webResearch, analyzeMedia } from "./gemini.js";
 import { getSubscription, setSubscription } from "./subscriptions.js";
 import { knownApps } from "./digest.js";
 import { authEnabled } from "./auth.js";
+import { dbEnabled } from "./db.js";
+import { registrationSchema, createRegistrationHandler } from "./registration.js";
 
 // ---------------------------------------------------------------------------
 // Core tool set — available on every surface
@@ -816,6 +818,7 @@ export function interverseAdminDiag() {
     urlSet: Boolean(process.env.INTERVERSE_API_URL),
     keySet: Boolean(process.env.INTERVERSE_ADMIN_KEY),
     urlHost,
+    registrationStorageReady: vaultEnabled() && dbEnabled(),
   };
 }
 
@@ -845,6 +848,7 @@ export async function pingInterverseAdmin() {
 async function interverseAdminFetch(path, options = {}) {
   const base = (process.env.INTERVERSE_API_URL || "").replace(/\/$/, "");
   const res = await fetch(base + path, {
+    signal: AbortSignal.timeout(20000),
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -852,8 +856,8 @@ async function interverseAdminFetch(path, options = {}) {
       ...(options.headers || {}),
     },
   });
-  if (res.status === 403) throw new Error("auth-failed");
-  if (!res.ok) throw new Error(`interverse returned HTTP ${res.status}`);
+  if (res.status === 403) throw Object.assign(new Error("auth-failed"), { status: 403 });
+  if (!res.ok) throw Object.assign(new Error(`interverse returned HTTP ${res.status}`), { status: res.status });
   return res.json();
 }
 
@@ -1011,6 +1015,11 @@ const testKitHandlers = {
 };
 
 const interverseAdminHandlers = {
+  register_interverse_game: createRegistrationHandler({
+    isAdmin: isAdminUser, configured: interverseAdminConfigured,
+    vaultReady: () => vaultEnabled() && dbEnabled(),
+    prepareVault: listSecrets, request: interverseAdminFetch, store: storeSecret,
+  }),
   get_ai_lane_status: (_input, context) =>
     callInterverseAdmin(() => interverseAdminFetch("/admin/config"), context),
   set_ai_conversion: ({ enabled } = {}, context) =>
@@ -1043,7 +1052,7 @@ export const toolSets = {
   babyresell: { schemas: babyresellSchemas, handlers: babyresellHandlers },
   babyresell_admin: { schemas: babyresellAdminSchemas, handlers: babyresellAdminHandlers },
   interverse_admin: {
-    schemas: [...interverseAdminSchemas, ...testKitSchemas],
+    schemas: [...interverseAdminSchemas, ...testKitSchemas, registrationSchema],
     handlers: { ...interverseAdminHandlers, ...testKitHandlers },
   },
 };
