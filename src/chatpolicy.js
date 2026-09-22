@@ -5,8 +5,8 @@ export function stripBackupBanner(text) {
   return String(text || '').replace(/^(?:\s*[_*]\(Running on (?:backup[^\n]*|Groq backup)\)[_*]\s*)+/i, '').trim();
 }
 export function cleanBackupHistory(messages) {
-  return messages.map(m => m.role !== 'assistant' ? m : {
+  return messages.map(m => m?.role !== 'assistant' ? m : {
     ...m, content: typeof m.content === 'string' ? stripBackupBanner(m.content)
-      : Array.isArray(m.content) ? m.content.map(b => b.type === 'text' ? { ...b, text: stripBackupBanner(b.text) } : b) : m.content,
+      : Array.isArray(m.content) ? m.content.map(b => b?.type === 'text' ? { ...b, text: stripBackupBanner(b.text) } : b) : m.content,
   });
 }

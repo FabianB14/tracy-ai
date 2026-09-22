@@ -132,3 +132,7 @@ test('Groq diagnostics classify errors without storing provider content', async 
   assert.ok(!JSON.stringify(groqDiag()).includes('private'));
   assert.ok(!JSON.stringify(groqDiag()).includes('test-secret'));
 });
+
+test('backup cleanup preserves null entries for the existing message sanitizer', () => {
+  assert.deepEqual(cleanBackupHistory([null, { role: 'assistant', content: [null, { type: 'text', text: 'Hi' }] }]), [null, { role: 'assistant', content: [null, { type: 'text', text: 'Hi' }] }]);
+});
