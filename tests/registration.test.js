@@ -136,3 +136,22 @@ test('Groq diagnostics classify errors without storing provider content', async 
 test('backup cleanup preserves null entries for the existing message sanitizer', () => {
   assert.deepEqual(cleanBackupHistory([null, { role: 'assistant', content: [null, { type: 'text', text: 'Hi' }] }]), [null, { role: 'assistant', content: [null, { type: 'text', text: 'Hi' }] }]);
 });
+
+test('registration preparation narrows only Groq Admin requests, retaining history and forced-tool schema', async () => {
+  const { prepareRegistrationCall, registrationReply } = await import('../src/registration.js');
+  const p = { system: 'Long product prompt', messages: [{ role: 'user', content: 'Register Gravegold, developer Fabian, studio Interverse.' }], tools: [registrationSchema, { name: 'other_tool' }], max_tokens: 2048 };
+  const prepared = prepareRegistrationCall(p, 'admin');
+  assert.equal(prepared.tools.length, 1);
+  assert.equal(prepared.tools[0].name, 'register_interverse_game');
+  assert.equal(prepared.messages, p.messages);
+  assert.equal(prepared.max_tokens, 1024);
+  assert.equal(prepareRegistrationCall(p, 'desktop'), p);
+  const unrelated = { ...p, messages: [{ role: 'user', content: 'What is the weather?' }] };
+  assert.equal(prepareRegistrationCall(unrelated, 'admin'), unrelated);
+  const followup = { ...p, messages: [...p.messages, { role: 'user', content: 'Yes, go ahead.' }] };
+  assert.equal(prepareRegistrationCall(followup, 'admin').tools.length, 1);
+  const result = await setup().run(input, context);
+  assert.match(registrationReply(result), /Registered Gravegold/);
+  assert.ok(!registrationReply(result).includes('issued-secret'));
+  assert.match(registrationReply({ registered: true, credential_saved: false, error: 'Storage failed; do not retry.' }), /Storage failed/);
+});
