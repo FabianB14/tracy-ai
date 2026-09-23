@@ -1,7 +1,18 @@
 // Optional free-plan fallback. No SDK dependency; credentials stay server-side.
 import { classifyModelError, worthFallingBack } from "./apierrors.js";
 
-const DEFAULT_MODEL = "llama-3.3-70b-versatile";
+const DEFAULT_MODEL = "openai/gpt-oss-120b";
+// Groq shut these down for self-serve accounts on 2026-08-16.
+// https://console.groq.com/docs/deprecations
+const RETIRED_MODELS = {
+  "llama-3.3-70b-versatile": "openai/gpt-oss-120b",
+  "llama-3.1-8b-instant": "openai/gpt-oss-20b",
+};
+let modelCheck = null;
+export function resolveGroqModel(env = process.env) {
+  const requested = env.GROQ_MODEL?.trim() || DEFAULT_MODEL;
+  return RETIRED_MODELS[requested] || requested;
+}
 const URL = "https://api.groq.com/openai/v1/chat/completions";
 let lastAttempt = null;
 
@@ -27,7 +38,9 @@ export function groqFailureMessage(kind) {
 export function groqDiag(env = process.env) {
   return {
     configured: Boolean(env.GROQ_API_KEY?.trim()),
-    model: env.GROQ_MODEL?.trim() || DEFAULT_MODEL,
+    model: resolveGroqModel(env),
+    configuredModel: env.GROQ_MODEL?.trim() || null,
+    modelCheck,
     timeoutMs: 20000,
     lastAttempt,
   };
@@ -80,6 +93,11 @@ export function toGroqRequest(params, model = DEFAULT_MODEL) {
     }
   }
   const body = { model, messages, max_completion_tokens: params.max_tokens };
+  if (/^openai\/gpt-oss-(20|120)b$/.test(model)) {
+    body.reasoning_effort = 'low';
+    body.include_reasoning = false;
+    body.parallel_tool_calls = false;
+  }
   if (params.temperature !== undefined) body.temperature = params.temperature;
   if (tools.length) body.tools = tools;
   if (params.tool_choice?.type === "tool") {
@@ -140,7 +158,7 @@ export async function groqCreate(params, { env = process.env, fetchImpl = fetch 
 
 // One wrapper per request, shared across that request's tool rounds. Switching
 // providers retries only inference with existing results, never the tool loop.
-export function withGroqFallback(primary, { byok = false, env = process.env, create = groqCreate } = {}) {
+export function withGroqFallback(primary, { byok = false, env = process.env, create = groqCreate, prepare = p => p } = {}) {
   let provider = "anthropic";
   let primaryError;
   let fallbackFailure = null;
@@ -157,9 +175,9 @@ export function withGroqFallback(primary, { byok = false, env = process.env, cre
         }
       }
       try {
-        const result = await create(params, { env });
+        const result = await create(prepare(params), { env });
         provider = "groq";
-        lastAttempt = { at: new Date().toISOString(), ok: true };
+        lastAttempt = { at: new Date().toISOString(), ok: true, model: result.model || resolveGroqModel(env) };
         fallbackFailure = null;
         return result;
       } catch (err) {
@@ -171,4 +189,24 @@ export function withGroqFallback(primary, { byok = false, env = process.env, cre
       }
     } },
   };
+}
+
+// One bounded startup check: fixed synthetic data, no real tool handler and no
+// user conversation. Diagnostics distinguish wiring from proven tool calling.
+export async function checkGroqModel({ env = process.env, create = groqCreate } = {}) {
+  if (!groqDiag(env).configured) return null;
+  try {
+    const result = await create({
+      system: 'Call emit_health_check with ok=true. This is a synthetic connectivity check.',
+      messages: [{ role: 'user', content: 'Check tool calling.' }], max_tokens: 512,
+      tools: [{ name: 'emit_health_check', description: 'Report synthetic check result.', input_schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] } }],
+      tool_choice: { type: 'tool', name: 'emit_health_check' },
+    }, { env });
+    const call = result.content?.find(b => b.type === 'tool_use' && b.name === 'emit_health_check');
+    if (call?.input?.ok !== true) throw new Error('Invalid health check result');
+    modelCheck = { at: new Date().toISOString(), ok: true, model: result.model || resolveGroqModel(env) };
+  } catch (err) {
+    modelCheck = { at: new Date().toISOString(), ok: false, kind: failureKind(err), status: Number.isInteger(err?.status) ? err.status : null };
+  }
+  return modelCheck;
 }

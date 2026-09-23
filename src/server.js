@@ -30,8 +30,9 @@ import { listThreads, getThread, saveThread, deleteThread } from "./threads.js";
 import { getFile, extractText } from "./documents.js";
 import { extractPdfText } from "./pdf.js";
 import { geminiConfigured, geminiChat } from "./gemini.js";
-import { groqDiag, groqFailureMessage, withGroqFallback } from "./groq.js";
+import { groqDiag, groqFailureMessage, withGroqFallback, checkGroqModel } from "./groq.js";
 import { canAnswerFromKnowledge, cleanBackupHistory, stripBackupBanner } from "./chatpolicy.js";
+import { prepareRegistrationCall, registrationReply } from "./registration.js";
 import { classifyModelError, worthFallingBack } from "./apierrors.js";
 import { logAnswer, getAnswerStats } from "./answerlog.js";
 import { runTask, taskModel, requireServiceSecret } from "./aitasks.js";
@@ -141,7 +142,7 @@ app.post("/chat", requireAuth, async (req, res) => {
     const byok = (req.headers["x-anthropic-key"] || "").trim();
     const client = withGroqFallback(
       byok.startsWith("sk-ant-") ? new Anthropic({ apiKey: byok }) : anthropic,
-      { byok: byok.startsWith("sk-ant-") },
+      { byok: byok.startsWith("sk-ant-"), prepare: params => prepareRegistrationCall(params, surface) },
     );
 
     // Bring-your-own Gemini key: an app (e.g. PartOut, where each user has their
@@ -276,6 +277,7 @@ app.post("/chat", requireAuth, async (req, res) => {
       // Execute every tool Claude asked for, append results, loop again.
       convo.push({ role: "assistant", content: response.content });
       const toolResults = [];
+      let completedRegistration = null;
       for (const block of response.content) {
         if (block.type !== "tool_use") continue;
         toolsUsed.push(block.name);
@@ -285,6 +287,7 @@ app.post("/chat", requireAuth, async (req, res) => {
         } catch (err) {
           result = { error: String(err) };
         }
+        if (block.name === 'register_interverse_game') completedRegistration = result;
         toolResults.push({
           type: "tool_result",
           tool_use_id: block.id,
@@ -292,6 +295,10 @@ app.post("/chat", requireAuth, async (req, res) => {
         });
       }
       convo.push({ role: "user", content: toolResults });
+      if (completedRegistration && toolResults.length === 1) {
+        response = { content: [{ type: 'text', text: registrationReply(completedRegistration) }] };
+        break;
+      }
     }
 
       text = response.content
@@ -705,6 +712,7 @@ app.post("/ai/tasks/:task", requireServiceSecret, async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Tracy is listening on :${PORT}`));
+checkGroqModel().then(result => { if (result) console.log("Groq startup check:", JSON.stringify(result)); });
 
 // Boot maintenance, best-effort and off the request path:
 // 1. If the embedding model changed (Google retires them regularly), re-embed

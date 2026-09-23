@@ -9,7 +9,7 @@ const params = { system: 'You are Tracy', max_tokens: 2048, messages: [{ role: '
 const answer = { content: [{ type: 'text', text: 'hello' }], stop_reason: 'end_turn' };
 const primaryFailure = Object.assign(new Error('overloaded'), { status: 529 });
 const failing = { messages: { create: async () => { throw primaryFailure; } } };
-const completion = (message = { content: 'hello' }, finish_reason = 'stop') => ({ choices: [{ message, finish_reason }], model: 'llama-3.3-70b-versatile', usage: { prompt_tokens: 4, completion_tokens: 2 } });
+const completion = (message = { content: 'hello' }, finish_reason = 'stop') => ({ choices: [{ message, finish_reason }], model: 'openai/gpt-oss-120b', usage: { prompt_tokens: 4, completion_tokens: 2 } });
 const toolCall = (name = 'lookup', args = '{"id":"abc"}') => ({ id: 'c1', type: 'function', function: { name, arguments: args } });
 const mocked = data => async () => ({ ok: true, json: async () => data });
 
@@ -71,7 +71,7 @@ test('request uses fixed endpoint, header authentication, bounded timeout and lo
     const body = JSON.parse(options.body);
     assert.equal(body.tools.length, 1);
     assert.equal(body.tools[0].function.name, 'lookup');
-    assert.equal(body.model, 'llama-3.3-70b-versatile');
+    assert.equal(body.model, 'openai/gpt-oss-120b');
     assert.equal(body.max_completion_tokens, 2048);
     return { ok: true, json: async () => completion() };
   } });
@@ -116,7 +116,7 @@ test('structured task fallback retains validation and reports the actual backup 
     return { ok: true, json: async () => completion({ tool_calls: [toolCall('emit_conversion', JSON.stringify(output))] }, 'tool_calls') };
   } });
   const result = await runTask('convert_asset', input, { client: withGroqFallback(failing, { env, create }), model: 'claude-haiku-4-5' });
-  assert.equal(result.model, 'llama-3.3-70b-versatile');
+  assert.equal(result.model, 'openai/gpt-oss-120b');
   assert.equal(sent.tool_choice.function.name, 'emit_conversion');
   assert.deepEqual(result.output, output);
   const invalid = withGroqFallback(failing, { env, create: async () => ({ content: [{ type: 'tool_use', input: {} }] }) });
@@ -141,4 +141,36 @@ test('failover state is isolated to one request', async () => {
   const second = withGroqFallback(primary, { env, create: () => assert.fail('new request should try Claude') });
   await second.messages.create(params);
   assert.equal(second.provider, 'anthropic');
+});
+
+// The previously configured self-serve Llama models were retired by Groq.
+test('retired model settings migrate while explicit supported overrides remain intact', async () => {
+  const { resolveGroqModel } = await import('../src/groq.js');
+  assert.equal(resolveGroqModel({}), 'openai/gpt-oss-120b');
+  assert.equal(resolveGroqModel({ GROQ_MODEL: ' llama-3.3-70b-versatile ' }), 'openai/gpt-oss-120b');
+  assert.equal(resolveGroqModel({ GROQ_MODEL: 'llama-3.1-8b-instant' }), 'openai/gpt-oss-20b');
+  assert.equal(resolveGroqModel({ GROQ_MODEL: 'custom-model' }), 'custom-model');
+  assert.equal(groqDiag({ GROQ_MODEL: 'llama-3.3-70b-versatile' }).configuredModel, 'llama-3.3-70b-versatile');
+  const body = toGroqRequest(params);
+  assert.equal(body.reasoning_effort, 'low');
+  assert.equal(body.include_reasoning, false);
+  assert.equal(body.parallel_tool_calls, false);
+  assert.equal(toGroqRequest(params, 'custom-model').reasoning_effort, undefined);
+});
+
+test('startup tool check verifies the key/model without executing a real action', async () => {
+  const { checkGroqModel } = await import('../src/groq.js');
+  assert.equal(await checkGroqModel({ env: {}, create: () => assert.fail('no key') }), null);
+  const result = await checkGroqModel({ env, create: async p => {
+    assert.equal(p.tools.length, 1);
+    assert.equal(p.tool_choice.name, 'emit_health_check');
+    assert.equal(p.max_tokens, 512);
+    return { model: 'openai/gpt-oss-120b', content: [{ type: 'tool_use', name: 'emit_health_check', input: { ok: true } }] };
+  } });
+  assert.equal(result.ok, true);
+  assert.equal(groqDiag().modelCheck.ok, true);
+  const failed = await checkGroqModel({ env, create: async () => { throw Object.assign(new Error('secret upstream body'), { groqKind: 'model', status: 404 }); } });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.status, 404);
+  assert.ok(!JSON.stringify(failed).includes('secret'));
 });

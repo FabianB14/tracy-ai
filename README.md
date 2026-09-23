@@ -216,7 +216,7 @@ Docs: https://docs.claude.com/en/api/overview
 
 Set `GROQ_API_KEY` in the server environment (Render service `tracy`) using a
 [Groq Free Plan key](https://console.groq.com/keys). Optionally set `GROQ_MODEL`;
-the default is `llama-3.3-70b-versatile`. No dependency or Anthropic SDK upgrade
+the default is `openai/gpt-oss-120b`. No dependency or Anthropic SDK upgrade
 is needed. Keep the key out of browser code and version control. Unset it to
 turn this fallback off. Restart/redeploy after changing the environment.
 
@@ -274,3 +274,24 @@ These fields contain no keys, prompts, tool data or provider error bodies. If a
 Groq request fails, the text backup identifies that failure instead of attributing
 every failure solely to Claude credit. `lastAttempt` resets at restart and refers
 to the latest attempt across the service, not a particular user.
+
+The default Groq model is now `openai/gpt-oss-120b`. Groq retired self-serve
+`llama-3.3-70b-versatile` and `llama-3.1-8b-instant` on August 16, 2026. Those
+specific legacy settings are automatically mapped to `openai/gpt-oss-120b` and
+`openai/gpt-oss-20b`; other explicit model overrides are preserved. See
+[Groq's migration notice](https://console.groq.com/docs/deprecations).
+GPT-OSS uses low reasoning effort, excludes reasoning from the response, and
+requests one local tool at a time.
+
+On startup, when Groq is configured, Tracy makes one small synthetic forced-tool
+check (512 maximum completion tokens) with no user data and no real handler.
+`/diag` exposes `modelFallback.modelCheck`; `ok: true` proves a live tool-call
+response, not just an environment variable. `configuredModel` shows the optional
+environment override and `model` shows the resolved replacement. This check uses
+a small amount of provider quota and can incur usage charges on paid accounts.
+
+Direct Admin game-registration requests use a compact Groq instruction set and
+only the registration schema, retaining the whole conversation. Claude receives
+its original context. The handler's result is rendered directly once registration
+finishes, avoiding a second model call merely to confirm it. This reduces the
+chance of the free-plan token limit interrupting confirmation after the write.
