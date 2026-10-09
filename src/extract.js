@@ -41,8 +41,11 @@ export function extractLimits(env = process.env) {
     budgetMs: envInt(env.EXTRACT_BUDGET_MS, 60000),
     minPageChars: envInt(env.EXTRACT_MIN_PAGE_CHARS, 10), // fewer letters/digits than this = needs transcription
     // The child process that reads a PDF or .docx is killed past this much
-    // memory (Render's free plan has 512 MB for everything; Tracy itself
-    // uses about 100 MB, and a scanned page renders in about 320 MB).
+    // private memory, or past what the instance has left if that is less
+    // (src/isolate.js). Render's free plan has 512 MB for everything; Tracy
+    // itself uses about 80-130 MB, and a scanned page renders in about
+    // 230 MB (a 12 MP scan) to 340 MB (a 600 dpi copier page or a 24 MP
+    // photo), however many pages the batch has (see renderPdfPagesJpeg).
     maxMemoryMb: envInt(env.EXTRACT_MAX_MEMORY_MB, 350),
     // Text per answer: a real 300-page book is about 1.5 million characters.
     // A PDF window stops early at this (last_page says where); a document or
@@ -467,6 +470,10 @@ export async function extractFromBuffer({ buffer, contentType = "", kind, firstP
 // (DUALREP_RENDER_BUDGET_MS, 45 s): the model call keeps the rest of the
 // task's 105 s (runTask takes preparation time off it), and a render that
 // runs out of time is a 503 render_timeout the worker tries again later.
+// A render killed for memory, or a page image over the API's per-image
+// limit, is 413 page_too_large, not too_large: the file is fine, a page in
+// it is too detailed to render here (a very high resolution scan). DualRep
+// says so and lets the person skip that batch.
 // `cache`: see makeDownloadCache (the batches of one scan reuse the file).
 export function makeRenderPdfPages({ env = process.env, fetchImpl, lookup, render, cache = null } = {}) {
   return async (url, pages) => {
@@ -482,6 +489,7 @@ export function makeRenderPdfPages({ env = process.env, fetchImpl, lookup, rende
         ? await render(buffer, pages, opts)
         : await runIsolated("pdfRender", buffer, { pages, ...opts }, { maxMemoryMb: limits.maxMemoryMb, timeoutMs: budgetMs + 15_000 });
     } catch (err) {
+      if (err?.status === 413 && err.code === "too_large") throw fail(413, "page_too_large", "a page needs too much memory to render");
       if (answered(err)) throw err;
       if (err?.code === "render_timeout" || err?.code === "isolate_timeout") throw fail(503, "render_timeout", "rendering the pages took too long; try again");
       if (err?.code === "pdf_unavailable") throw fail(503, "pdf_unavailable", "PDF support isn't available on this server");
@@ -492,8 +500,12 @@ export function makeRenderPdfPages({ env = process.env, fetchImpl, lookup, rende
     // the model to transcribe a page it never sees.
     const got = new Set((shots || []).map((s) => s.page));
     if (!pages.every((p) => got.has(p))) throw fail(422, "page_out_of_range", "a requested page is not in the PDF");
-    // The API refuses a request over 32 MB; JPEG pages are a few hundred KB,
-    // so only something pathological gets near this.
+    // The API refuses an image over 10 MB (base64) and a request over 32 MB;
+    // JPEG pages are a few hundred KB, so only something pathological gets
+    // near these. Refused here, the model is never asked (asking again would
+    // send the same image).
+    const big = shots.find((s) => String(s.data || "").length > MAX_IMAGE_BYTES);
+    if (big) throw fail(413, "page_too_large", "a rendered page is too large to send");
     const bytes = shots.reduce((sum, s) => sum + String(s.data || "").length, 0);
     if (bytes > MAX_RENDER_BYTES) throw fail(413, "too_large", "the rendered pages are too large to send");
     return pages.map((p) => shots.find((s) => s.page === p));
@@ -501,3 +513,4 @@ export function makeRenderPdfPages({ env = process.env, fetchImpl, lookup, rende
 }
 
 const MAX_RENDER_BYTES = 24 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;

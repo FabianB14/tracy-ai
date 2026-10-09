@@ -142,7 +142,7 @@ caller gets 403):
 |---|---|
 | `POST /ai/extract` | `{url, kind: "pdf"\|"doc"\|"link", first_page?, max_pages?, request_id?}` → per-page text chunks. `url` is a signed Storage URL (a `link` may be any public https page). Returns `{ok, kind, format, bytes, total_pages, first_page, last_page, title, pages:[{page, chars, letters, needs_transcription, chunks:[{ordinal, title, content}]}], latency_ms}`. A docx or web page is one entry with `page: null`. Pages without a text layer come back `needs_transcription: true`. When `last_page < total_pages`, call again with `first_page = last_page + 1` (a slow parse stops early and says so in `last_page`). Errors: 400 `bad_input`/`bad_url`, 413 `too_large` (also a file that needs more than `EXTRACT_MAX_MEMORY_MB` to read, or more than 3 million characters of text), 415 `unsupported_type`, 422 `fetch_failed`/`timeout`/`pdf_encrypted`/`pdf_unreadable`/`doc_unreadable`/`no_text`, 503 `busy` (another file is being read: try again shortly) / `pdf_unavailable`/`doc_unavailable`. |
 | `POST /ai/tasks/dualrep_transcribe_notes` | One photo of handwritten notes (`{image_url, page, subject?, previous_errors?}`) → `{status: "draft", page: {page, blank, transcript, legibility, uncertain[], diagrams[]}}`. Anthropic fetches the photo from the signed URL. JPEG/PNG/WebP only (the app converts HEIC). A URL that isn't https on one of `DUALREP_STORAGE_HOSTS` is 400 `bad_url`, as on `/ai/extract`. |
-| `POST /ai/tasks/dualrep_transcribe_pdf_pages` | 1–4 scanned pages of a PDF (`{pdf_url, pages, subject?, previous_errors?}`) → `{status: "draft", pages: [...]}`. Tracy renders only those pages, one at a time, to JPEG in a child process, within `DUALREP_RENDER_BUDGET_MS` (else 503 `render_timeout`), so a big scan isn't billed in full on every call and the model keeps most of the time. 503 `busy` while another file is read. |
+| `POST /ai/tasks/dualrep_transcribe_pdf_pages` | 1–4 scanned pages of a PDF (`{pdf_url, pages, subject?, previous_errors?}`) → `{status: "draft", pages: [...]}`. Tracy renders only those pages, one at a time, to JPEG in a child process (1568 px wide, or a 2576 px long edge for a page taller than that: the API refuses an image edge over 8000 px), within `DUALREP_RENDER_BUDGET_MS` (else 503 `render_timeout`), so a big scan isn't billed in full on every call and the model keeps most of the time. 413 `page_too_large` when a page needs more memory to render than the child may have, or its image is over the API's 10 MB. 503 `busy` while another file is read. |
 | `POST /ai/tasks/dualrep_build_outline` | `{plan, existing_topics?, chunks: [{id, page, title?, excerpt ≤ 400}] (1–300), max_topics ≤ 40}` → `{topics: [{key, title, summary, existing_topic_id, chunk_ids}], unassigned_chunk_ids}`. Every chunk appears exactly once. The model sees short aliases (`c1`, `c2`, …) instead of your ids, so the answer stays small; you get your own ids back. |
 | `POST /ai/tasks/dualrep_build_cards` | One topic: `{plan, topic, chunks: [{id, page, content}] (1–40), existing_cards?, card_types, max_cards ≤ 20}` → `{cards: [{key, card_type, question, answer, source_chunk_id, page, quote}], links: [{from_key, to, relation, note}]}`. |
 
@@ -170,10 +170,17 @@ retrying as is.
 **Reading files safely.** The byte limits cap the download, not what a file
 unpacks to (a 100 KB .docx can hold 100 MB of text). So PDFs and .docx files
 are read, and scanned pages rendered, in a child process (`src/isolate.js`)
-that Tracy stops past `EXTRACT_MAX_MEMORY_MB` (350; Render's free plan has
-512 MB for everything) or its time limit; the file then fails with 413
-`too_large` and Tracy, Interverse and `/chat` stay up. One file is read at a
-time: a second request meanwhile gets 503 `busy`. The last Storage file read is
+that Tracy stops past its time limit, or once its private memory passes
+`EXTRACT_MAX_MEMORY_MB` (350) or what the instance has left (its cgroup
+memory limit less Tracy's own memory, measured after a garbage collection, and
+32 MB; Render's free plan has 512 MB for everything), whichever is less. The file then fails with 413 `too_large`
+(a scanned page that is too detailed to render: 413 `page_too_large`) and
+Tracy, Interverse and `/chat` stay up. The node binary and libraries the
+child shares with Tracy don't count. A scanned page renders in about 230 MB
+(a 12 MP scan) to 340 MB (a 600 dpi copier page, a 24 MP photo), whatever the
+file size and however many pages the call has: the child collects garbage
+before each full-resolution canvas and hands freed memory back to the system.
+One file is read at a time: a second request meanwhile gets 503 `busy`. The last Storage file read is
 kept in memory for up to 10 minutes and revalidated with `If-None-Match` on the
 next request for it (Storage still checks the new signed URL and answers 304 if
 it is unchanged), so the 50 batches of a 200-page scan don't download 25 MB

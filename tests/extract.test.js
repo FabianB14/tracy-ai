@@ -283,6 +283,22 @@ test("the renderer has its own time budget, passes busy on, and refuses an overs
   await assert.rejects(make(async (buf, pages) => pages.map((p) => ({ page: p, mediaType: "image/jpeg", data: huge })))(PDF_URL, [1, 2, 3, 4]), (e) => e.status === 413 && e.code === "too_large");
 });
 
+test("a page too detailed to render here is page_too_large, not a file too large to read", async () => {
+  const fetchImpl = async () => new Response("%PDF-1.7 fake", { status: 200 });
+  const make = (render) => makeRenderPdfPages({ env: ENV, fetchImpl, lookup: publicDns, render });
+  // The render child killed at its memory limit (a 600 dpi scan, a 24 MP photo page).
+  await assert.rejects(
+    make(async () => { throw Object.assign(new Error("the file needs too much memory to read"), { status: 413, code: "too_large" }); })(PDF_URL, [1, 2]),
+    (e) => e.status === 413 && e.code === "page_too_large",
+  );
+  // One page image over the API's 10 MB per image: refused before the model is asked.
+  const shot = (page, mb) => ({ page, mediaType: "image/jpeg", data: "A".repeat(mb * 1024 * 1024) });
+  await assert.rejects(
+    make(async () => [shot(1, 1), shot(2, 11)])(PDF_URL, [1, 2]),
+    (e) => e.status === 413 && e.code === "page_too_large",
+  );
+});
+
 // ---- real libraries (skipped without node_modules) ----
 
 async function optional(name) {
@@ -330,6 +346,70 @@ test("real pdf-parse: per-page text, a scanned-looking page, windows, and render
   const rendered = await renderPages(PDF_URL, [3, 2]);
   assert.deepEqual(rendered.map((s) => [s.page, s.mediaType]), [[3, "image/jpeg"], [2, "image/jpeg"]]);
   assert.deepEqual([...Buffer.from(rendered[0].data, "base64").subarray(0, 3)], [0xff, 0xd8, 0xff], "a JPEG");
+  const letter = jpegSize(rendered[0].data);
+  assert.ok(Math.abs(letter.width - 1568) <= 1 && letter.height === 2029, "a letter page at 1568 px wide, as before");
+});
+
+// Width x height of a base64 JPEG, from its start-of-frame marker.
+function jpegSize(base64) {
+  const j = Buffer.from(base64, "base64");
+  for (let i = 2; i + 9 < j.length;) {
+    const marker = j[i + 1];
+    if (marker >= 0xc0 && marker <= 0xc3) return { width: j.readUInt16BE(i + 7), height: j.readUInt16BE(i + 5) };
+    i += 2 + j.readUInt16BE(i + 2);
+  }
+  return null;
+}
+
+test("real rendering: a very tall page is scaled to a 2576 px long edge, never past the API's 8000 px", { skip: !(canRunReal && hasCanvas) && "pdfkit, pdf-parse or the canvas not installed" }, async () => {
+  // A continuous note export or a long receipt: 612 x 4000 pt, drawing only (no text layer).
+  const pdf = await new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ autoFirstPage: false });
+    const parts = [];
+    doc.on("data", (d) => parts.push(d));
+    doc.on("end", () => resolve(Buffer.concat(parts)));
+    doc.on("error", reject);
+    doc.addPage({ size: [612, 4000] });
+    for (let y = 40; y < 3960; y += 120) doc.rect(40, y, 500, 40).fill("#333");
+    doc.end();
+  });
+  const renderPages = makeRenderPdfPages({ env: ENV, lookup: publicDns, fetchImpl: async () => new Response(pdf, { status: 200 }) });
+  const [shot] = await renderPages(PDF_URL, [1]);
+  const size = jpegSize(shot.data);
+  assert.equal(size.height, 2576, `long edge capped (got ${size.width} x ${size.height}; width-only scaling gave 1568 x 10248)`);
+  assert.ok(Math.abs(size.width - 394) <= 1, "the width keeps the page's proportions");
+});
+
+test("real rendering: garbage is collected before each full-resolution page image is drawn", { skip: !(canRunReal && hasCanvas) && "pdfkit, pdf-parse or the canvas not installed" }, async () => {
+  // A picture-only page holding a 2400 x 2400 image (5.8 MP), like a scan. pdf.js draws it at full
+  // size before scaling; collecting the decoder's garbage first keeps the peak the same every time.
+  const { createCanvas } = await import("@napi-rs/canvas");
+  const canvas = createCanvas(2400, 2400);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, 2400, 2400); ctx.fillStyle = "#000";
+  for (let y = 60; y < 2400; y += 80) ctx.fillRect(100, y, 2200, 20);
+  const png = canvas.encodeSync("png");
+  const pdf = await new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ autoFirstPage: false });
+    const parts = [];
+    doc.on("data", (d) => parts.push(d));
+    doc.on("end", () => resolve(Buffer.concat(parts)));
+    doc.on("error", reject);
+    doc.addPage({ size: [612, 792], margin: 0 });
+    doc.image(png, 0, 0, { width: 612 });
+    doc.end();
+  });
+  const { renderPdfPagesJpeg } = await import("../src/pdf.js");
+  const had = globalThis.gc;
+  let collections = 0;
+  globalThis.gc = () => { collections += 1; };
+  try {
+    const [shot] = await renderPdfPagesJpeg(pdf, [1]);
+    assert.ok(shot.data.length > 0);
+  } finally {
+    if (had) globalThis.gc = had; else delete globalThis.gc;
+  }
+  assert.ok(collections >= 1, "collected before the 5.8 MP image canvas");
 });
 
 // A PDF whose one page content stream is tiny compressed and huge inflated.

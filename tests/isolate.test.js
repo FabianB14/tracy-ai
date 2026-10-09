@@ -4,9 +4,11 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runIsolated, isBusy } from "../src/isolate.js";
+import { runIsolated, isBusy, procRss, instanceMemoryLimit, childHeadroomMb, cgroupLimitFiles } from "../src/isolate.js";
 
 const child = (name) => fileURLToPath(new URL(`./fixtures/isolate-${name}.js`, import.meta.url));
 const hasProc = existsSync("/proc/self/status"); // Linux, like Render
@@ -49,4 +51,48 @@ test("one document at a time: a second read while one runs is 503 busy at once",
   await assert.rejects(first, (e) => e.code === "isolate_timeout");
   // Free again afterwards.
   assert.deepEqual((await runIsolated("pdfText", Buffer.from("x"), {}, { child: child("echo"), timeoutMs: 10_000 })).bytes, 1);
+});
+
+test("the limit is on the child's private memory, not the node binary and libraries it shares with Tracy", { skip: !hasProc && "no /proc on this host" }, async () => {
+  const status = readFileSync("/proc/self/status", "utf8");
+  const kb = (field) => Number((new RegExp(`^${field}:\\s+(\\d+)`, "m").exec(status) || [0, 0])[1]) * 1024;
+  if (!/^RssAnon:/m.test(status)) return; // a kernel without the split: VmRSS is all there is
+  const rss = await procRss(process.pid);
+  // RssAnon + RssShmem, about 70 MB less than VmRSS for a Node process (its file-backed pages).
+  assert.ok(rss < kb("VmRSS"), "less than VmRSS");
+  assert.ok(Math.abs(rss - (kb("RssAnon") + kb("RssShmem"))) < 16 * 1024 * 1024, "RssAnon + RssShmem");
+});
+
+test("a child never gets more memory than the instance has left", { skip: !hasProc && "no /proc on this host" }, async () => {
+  let seen = 0;
+  const rssOf = async (pid) => { const r = await procRss(pid); if (r) seen = Math.max(seen, r); return r; };
+  await assert.rejects(
+    runIsolated("docxHtml", Buffer.from("PK"), {}, { child: child("hog"), maxMemoryMb: 600, headroomOf: async () => 120, rssOf, timeoutMs: 20_000, pollMs: 20 }),
+    (e) => e.status === 413 && e.code === "too_large",
+  );
+  assert.ok(seen < 300 * 1024 * 1024, `killed near the 120 MB headroom, not at 600 MB (saw ${Math.round(seen / 1048576)} MB)`);
+  assert.equal(isBusy(), false);
+});
+
+test("the headroom is the instance's memory limit less Tracy's own memory and a margin", async () => {
+  const MB = 1024 * 1024;
+  assert.equal(await childHeadroomMb({ limitOf: async () => 512 * MB, rssOf: () => 130 * MB }), 350);
+  assert.equal(await childHeadroomMb({ limitOf: async () => null, rssOf: () => 130 * MB }), null, "no limit to read: the configured one applies");
+  assert.ok(Number.isInteger(await childHeadroomMb({ limitOf: async () => 4096 * MB })), "Tracy's own memory, measured after a collection");
+  const dir = mkdtempSync(join(tmpdir(), "cgroup-"));
+  const file = (name, text) => { const p = join(dir, name); writeFileSync(p, text); return p; };
+  assert.equal(await instanceMemoryLimit([file("v2", "536870912\n")]), 512 * MB, "cgroup v2 memory.max");
+  assert.equal(await instanceMemoryLimit([file("v2max", "max\n"), file("v1", "9223372036854771712\n")]), null, "no limit (v2 'max', v1's huge number)");
+  assert.equal(await instanceMemoryLimit([join(dir, "missing"), file("v1b", "1073741824")]), 1024 * MB, "cgroup v1 when there is no v2 file");
+  // The process's own cgroup first, then the root a container with its own cgroup namespace sees.
+  assert.deepEqual(cgroupLimitFiles("0::/\n"), ["/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"]);
+  assert.deepEqual(cgroupLimitFiles("0::/kubepods/pod1/c1\n").slice(0, 1), ["/sys/fs/cgroup/kubepods/pod1/c1/memory.max"]);
+  assert.deepEqual(cgroupLimitFiles("5:cpu:/x\n4:memory:/docker/abc\n").slice(0, 1), ["/sys/fs/cgroup/memory/docker/abc/memory.limit_in_bytes"]);
+});
+
+test("the child can collect garbage and hands freed memory back (the page renderer depends on it)", async () => {
+  assert.deepEqual(
+    await runIsolated("pdfRender", Buffer.from("%PDF"), {}, { child: child("env"), timeoutMs: 10_000 }),
+    { gc: "function", arenas: "2", mmapThreshold: "131072" },
+  );
 });

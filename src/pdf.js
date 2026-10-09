@@ -70,26 +70,46 @@ export async function extractPdfPages(buffer, { first = 1, last, deadline = Infi
 
 // JPEG renders of the given pages, for vision transcription of scans
 // (DualRep). Pages are rendered one at a time and each canvas is freed before
-// the next, so a 4-page call holds one page bitmap instead of four; and JPEG
-// (quality 85), because a scanned page as PNG costs about a second of CPU and
-// 6-8 MB, as JPEG well under a tenth of a second and a few hundred KB, which
-// keeps the request far under the API's 32 MB. width: 1568 keeps a portrait
-// page (about 1568 x 2218) inside the 2576 px long edge Claude's
-// high-resolution tier reads without downscaling. Pages past the end are
-// skipped. `deadline` (a Date.now() value) is checked between pages: past it
-// the render stops with code render_timeout, so the model call keeps its
+// the next, so a 4-page call holds one page bitmap instead of four. pdf.js
+// draws a page image at its full resolution first (a 600 dpi scan is 34 MP,
+// 135 MB as a canvas), so where the child runs with --expose-gc
+// (src/isolate.js) garbage is collected before each canvas over 4 million
+// pixels: the image decoder's working buffers are garbage by then, and
+// whether V8 happened to have collected them decided whether a 24 MP photo
+// page peaked at 335 or 410 MB. And JPEG (quality 85), because a scanned page
+// as PNG costs about a second of CPU and 6-8 MB, as JPEG well under a tenth
+// of a second and a few hundred KB, which keeps the request far under the
+// API's 32 MB. width: 1568 keeps a portrait page (about 1568 x 2218) inside
+// the 2576 px long edge Claude's high-resolution tier reads without
+// downscaling. A page taller than that ratio (a long receipt, a continuous
+// note export) is scaled to a 2576 px long edge instead: at width 1568 a
+// 612 x 4000 pt page came out 10248 px tall, and the API refuses any image
+// edge over 8000 px (a 400 that asking again can't fix). Pages past the end
+// are skipped. `deadline` (a Date.now() value) is checked between pages: past
+// it the render stops with code render_timeout, so the model call keeps its
 // share of the task's time budget.
+export const MAX_LONG_EDGE = 2576;
+
 export async function renderPdfPagesJpeg(buffer, pages, { width = 1568, quality = 85, deadline = Infinity } = {}) {
   const parser = await openPdf(buffer);
   try {
     const doc = await parser.load();
+    const factory = doc.canvasFactory;
+    if (typeof globalThis.gc === "function") {
+      const big = (w, h) => w * h > 4_000_000;
+      const create = factory.create.bind(factory);
+      const reset = factory.reset.bind(factory);
+      factory.create = (w, h) => { if (big(w, h)) globalThis.gc(); return create(w, h); };
+      factory.reset = (c, w, h) => { if (big(w, h)) globalThis.gc(); return reset(c, w, h); };
+    }
     const out = [];
     for (const n of pages) {
       if (!Number.isInteger(n) || n < 1 || n > doc.numPages) continue;
       if (Date.now() >= deadline) throw Object.assign(new Error("rendering ran out of time"), { code: "render_timeout" });
       const page = await doc.getPage(n);
-      const viewport = page.getViewport({ scale: width / page.getViewport({ scale: 1 }).width });
-      const factory = doc.canvasFactory;
+      const natural = page.getViewport({ scale: 1 }); // after the page's /Rotate
+      const scale = Math.min(width / natural.width, MAX_LONG_EDGE / Math.max(natural.width, natural.height));
+      const viewport = page.getViewport({ scale });
       const target = factory.create(viewport.width, viewport.height);
       try {
         await page.render({ canvasContext: target.context, viewport, canvas: target.canvas }).promise;
