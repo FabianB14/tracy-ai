@@ -173,7 +173,7 @@ are read, and scanned pages rendered, in a child process (`src/isolate.js`)
 that Tracy stops past its time limit, or once its private memory passes
 `EXTRACT_MAX_MEMORY_MB` (350) or what the instance has left (its cgroup
 memory limit less Tracy's own memory, measured after a garbage collection, and
-32 MB; Render's free plan has 512 MB for everything), whichever is less. The file then fails with 413 `too_large`
+32 MB; Render's Free and Starter instances have 512 MB for everything), whichever is less. The file then fails with 413 `too_large`
 (a scanned page that is too detailed to render: 413 `page_too_large`) and
 Tracy, Interverse and `/chat` stay up. The node binary and libraries the
 child shares with Tracy don't count. A scanned page renders in about 230 MB
@@ -227,10 +227,12 @@ Other knobs (all optional, in `.env.example`): `TRACY_TASK_EFFORT_STRONG`,
 `EXTRACT_MAX_BYTES` (25 MiB), `EXTRACT_MAX_LINK_BYTES` (5 MiB),
 `EXTRACT_MAX_PAGES` (100), `EXTRACT_TIMEOUT_MS` (20 s), `EXTRACT_BUDGET_MS`
 (60 s), `EXTRACT_MIN_PAGE_CHARS` (10), `EXTRACT_MAX_MEMORY_MB` (350),
-`EXTRACT_MAX_TEXT_CHARS` (3,000,000), `DUALREP_RENDER_BUDGET_MS` (45 s). On Render's free plan (0.1 CPU, sleeps
-after 15 idle minutes) the first call after a sleep can take about a minute;
-DualRep's worker wakes Tracy with `GET /health` first and retries on its next
-run. If big PDFs are slow, lower `EXTRACT_MAX_PAGES` or move to a paid plan.
+`EXTRACT_MAX_TEXT_CHARS` (3,000,000), `DUALREP_RENDER_BUDGET_MS` (45 s). Tracy
+runs on Render's Starter instance (0.5 CPU, 512 MB, never sleeps). DualRep's
+worker still calls `GET /health` first and retries on its next run if Tracy is
+restarting (or asleep, on a Free instance). Memory, not CPU, is the tight part:
+DualRep sends one step at a time. If big PDFs are slow or restart Tracy, lower
+`EXTRACT_MAX_PAGES` or move to the Standard instance (2 GB).
 
 ### Toggling the AI lane from chat (admins)
 
