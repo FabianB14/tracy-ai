@@ -39,12 +39,18 @@ tracy-ai/
 ├── prompts/
 │   ├── tracy_system.md          # CORE identity — who Tracy is on every surface
 │   └── surfaces/
-│       └── babyresell.md        # per-surface extension (rules + tools for one surface)
+│       ├── babyresell.md        # per-surface extension (rules + tools for one surface)
+│       └── dualrep.md           # DualRep's study jobs (used by the dualrep_* tasks, not /chat)
 ├── src/
 │   ├── server.js                # Express API + Claude tool-use loop
 │   ├── surfaces.js              # resolves a surface → core + surface prompt + tool sets
 │   ├── tools.js                 # tool sets, grouped by surface (stubs for now)
-│   └── logging.js               # appends each exchange to logs/conversations.jsonl
+│   ├── logging.js               # appends each exchange to logs/conversations.jsonl
+│   ├── aitasks.js               # AI task lane: task registry, runTask, per-caller secrets
+│   ├── tasks/                   # task definitions + validators (dualrep.js, schema.js)
+│   ├── extract.js               # POST /ai/extract: per-page text from PDFs, docx, web pages
+│   └── pdf.js                   # pdf-parse helpers (whole text, per page, page images)
+├── tests/                       # npm test (node --test, no network)
 ├── scripts/
 │   ├── talk-to-tracy.js         # terminal chat client (seed of the desktop app)
 │   ├── run-personality-tests.js # runs the personality/safety suite → results table
@@ -77,31 +83,132 @@ there.
 
 ## AI task lane (service-to-service)
 
-Tracy isn't only a chat brain. Other Interverse backends can call her for
-**structured AI tasks** over a machine-to-machine lane — no conversation, just
-guaranteed-shape JSON in and out. First task: **cross-game asset conversion**
-(the INTERVERSE backend asks Tracy to translate an item from one game into
-another game's catalog terms).
+Tracy isn't only a chat brain. Other backends can call her for **structured AI
+tasks** over a machine-to-machine lane — no conversation, just guaranteed-shape
+JSON in and out. Two callers today: the **INTERVERSE backend** (`convert_asset`,
+cross-game asset conversion) and **DualRep** (the `dualrep_*` study tasks and
+`POST /ai/extract`, see [DualRep lane](#dualrep-lane)).
 
+- **Auth**: one secret per caller, sent as `X-Service-Secret`.
+  `SERVICE_SECRET` is Interverse's, `SERVICE_SECRET_DUALREP` is DualRep's. An
+  unset secret locks that caller out, and **each caller can run only its own
+  tasks** — a wrong secret and someone else's task both get the same
+  `403 {"error":"forbidden"}`. The two values must differ (Tracy warns at boot
+  if they don't).
 - **Endpoint**: `POST /ai/tasks/convert_asset` with header
   `X-Service-Secret: <SERVICE_SECRET>` and body
   `{"request_id": "...", "input": {source_game, target_game, asset, target_catalog, previous_errors}}`
   (`request_id` and the last two input fields optional; `previous_errors`
   carries validator rejections from a prior attempt so the retry fixes them).
-- **Response**: `200 {"ok":true, "task":"convert_asset", "output":{model_id, name,
-  properties, tags, reasoning}, "model", "usage"}`. The output shape is
-  guaranteed — Claude is forced through a tool call and the result is validated
-  before it's returned. Failures: `403 {"error":"forbidden"}` (missing/wrong
-  secret — the lane is closed unless `SERVICE_SECRET` is set), `400` (unknown
-  task or bad input), `502` (the model call failed or returned unusable output).
-- **Env**: `SERVICE_SECRET` (required, opens the lane) and `TRACY_TASK_MODEL`
-  (default `claude-haiku-4-5` — these are high-volume narrow tasks, so the
-  cheap model is the default).
+- **Response**: `200 {"ok":true, "task", "output", "model", "usage",
+  "latency_ms", "request_id"?}`. The output shape is guaranteed — a forced tool
+  call (`convert_asset`) or structured outputs (`dualrep_*`), validated before
+  it's returned. Failures: `{"ok":false, "error", "code", "errors"?,
+  "request_id"?}` with `403` (secret/caller), `400` (`unknown_task`,
+  `bad_input` + `errors[]`), `413`/`415`/`422` (a file in the input can't be
+  read), `503` (not available on this server) or `502` (`model_error`,
+  `refused`, `truncated`, `no_output`, or `invalid_output` + `errors[]`, at most
+  50, ready to send back as `previous_errors`).
+- **Env**: `TRACY_TASK_MODEL` (the "fast" tier, default `claude-haiku-4-5` —
+  `convert_asset` runs here, exactly as before: forced tool, temperature 0,
+  1024 tokens) and `TRACY_TASK_MODEL_STRONG` (the "strong" tier, default
+  `claude-sonnet-5-5`). Either can name any Claude model: Tracy leaves out
+  temperature, forced tool choice and effort where a model rejects them.
 
-`/chat` is untouched — this lane has its own auth and its own route, and each
-conversion is logged through the same training-data pipeline as chat
-(`src/logging.js`). Add a task by adding an entry to `TASKS` in
-`src/aitasks.js`; run its tests with `npm test`.
+`/chat` is untouched — this lane has its own auth and its own route. Each
+`convert_asset` call is logged through the same training-data pipeline as chat
+(`src/logging.js`); DualRep's tasks log metadata only (below). Add a task by
+adding an entry to `TASKS` in `src/aitasks.js` (the fields are listed there:
+`caller`, `tier`, `schema` or `tool`, `checkInput`, `checkOutput`, …); run the
+tests with `npm test`.
+
+### DualRep lane
+
+[DualRep](https://github.com/FabianB14/DualRep) (study + strength training)
+turns a person's course PDFs, documents, links and photos of handwritten notes
+into a study plan and quiz cards. Its Supabase Edge Function worker runs the
+pipeline one short step at a time and calls Tracy for the AI parts. Tracy
+stores nothing: files live in memory for one request, and every DualRep call
+logs **one metadata line** (caller, task, request id, status, code, model,
+token counts, latency) — never the material, the answer or an error's text.
+DualRep's tasks **never fall back to Groq** (private, possibly copyrighted
+uploads stay with Anthropic).
+
+**Endpoints** (header `X-Service-Secret: <SERVICE_SECRET_DUALREP>`; any other
+caller gets 403):
+
+| Call | What it does |
+|---|---|
+| `POST /ai/extract` | `{url, kind: "pdf"\|"doc"\|"link", first_page?, max_pages?, request_id?}` → per-page text chunks. `url` is a signed Storage URL (a `link` may be any public https page). Returns `{ok, kind, format, bytes, total_pages, first_page, last_page, title, pages:[{page, chars, letters, needs_transcription, chunks:[{ordinal, title, content}]}], latency_ms}`. A docx or web page is one entry with `page: null`. Pages without a text layer come back `needs_transcription: true`. When `last_page < total_pages`, call again with `first_page = last_page + 1` (a slow parse stops early and says so in `last_page`). Errors: 400 `bad_input`/`bad_url`, 413 `too_large`, 415 `unsupported_type`, 422 `fetch_failed`/`timeout`/`pdf_encrypted`/`pdf_unreadable`/`doc_unreadable`/`no_text`, 503 `pdf_unavailable`/`doc_unavailable`. |
+| `POST /ai/tasks/dualrep_transcribe_notes` | One photo of handwritten notes (`{image_url, page, subject?, previous_errors?}`) → `{status: "draft", page: {page, blank, transcript, legibility, uncertain[], diagrams[]}}`. Anthropic fetches the photo from the signed URL. JPEG/PNG/WebP only (the app converts HEIC). |
+| `POST /ai/tasks/dualrep_transcribe_pdf_pages` | 1–4 scanned pages of a PDF (`{pdf_url, pages, subject?, previous_errors?}`) → `{status: "draft", pages: [...]}`. Tracy renders only those pages to images, so a big scan isn't billed in full on every call. |
+| `POST /ai/tasks/dualrep_build_outline` | `{plan, existing_topics?, chunks: [{id, page, title?, excerpt ≤ 400}] (1–600), max_topics ≤ 40}` → `{topics: [{key, title, summary, existing_topic_id, chunk_ids}], unassigned_chunk_ids}`. Every chunk appears exactly once. |
+| `POST /ai/tasks/dualrep_build_cards` | One topic: `{plan, topic, chunks: [{id, page, content}] (1–40), existing_cards?, card_types, max_cards ≤ 20}` → `{cards: [{key, card_type, question, answer, source_chunk_id, page, quote}], links: [{from_key, to, relation, note}]}`. |
+
+The validators are the guardrails: transcriptions are always drafts for the
+person to check (Tracy can't mark one confirmed); every card cites a chunk id
+and page DualRep sent, and its `quote` must really be in that chunk; outline
+topics may only use input chunk ids. Their messages name fields and indexes,
+never content (they reach DualRep's job table and the phone).
+
+**Models.** The four tasks run on the strong tier (`TRACY_TASK_MODEL_STRONG`,
+default `claude-sonnet-5-5`) with structured outputs (`output_config.format`),
+no temperature, a per-task time budget of 90–105 s and no SDK retries. The
+budget covers the whole task: time spent preparing the input (downloading and
+rendering scanned PDF pages) comes off the model call's share, so the answer
+always reaches DualRep's worker, which waits 110 s per call (about 150 s per
+run) and retries itself. On Claude Sonnet 5.5 and
+Opus 5.x Tracy also sends `fallbacks: "default"`: if Anthropic's safety
+classifiers decline a request (for example `cyber` or `frontier_llm` on course
+material about security or AI), Anthropic re-runs it on another Claude model in
+the same call. `TRACY_TASK_FALLBACKS=off` turns that off. A decline that
+remains comes back as `502 code: "refused"` (with `category`), an answer cut
+off at `max_tokens` as `code: "truncated"` — send less material rather than
+retrying as is.
+
+**Costs** (estimates, not measured; from DualRep's Phase 2 research, re-check
+against real `usage` once it runs):
+
+| Model (`TRACY_TASK_MODEL_STRONG`) | Outline + cards for a 100-page course PDF | One handwritten page |
+|---|---|---|
+| `claude-sonnet-5-5` (default; $2 / $10 per million tokens in / out) | about $1.10 (likely $0.80–$1.80) | about $0.03 |
+| `claude-haiku-5-5` ($0.10 / $0.50) | about $0.06 | about $0.002 |
+| `claude-haiku-4-5` ($1 / $5; reads photos at lower resolution) | about $0.34 | about $0.006 |
+
+Switching models is one Render variable; quality on DualRep's material has not
+been compared yet. DualRep shares this Anthropic account, so its spend counts
+against the same monthly limit.
+
+**Set up on Render** (Tracy service → Environment; saving redeploys):
+
+1. `SERVICE_SECRET_DUALREP` — a long random string. PowerShell:
+   `$b = New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); -join ($b | % { $_.ToString('x2') })`
+   (or `openssl rand -hex 32`). Put the same value in DualRep's GitHub secret
+   `TRACY_SERVICE_SECRET`. It must differ from `SERVICE_SECRET`.
+2. `DUALREP_STORAGE_HOSTS` — `<project-ref>.supabase.co` (from DualRep's
+   Supabase URL). Without it every pdf, docx and photo job is refused.
+3. Optional: `TRACY_TASK_MODEL_STRONG` (`claude-haiku-5-5` to save money).
+4. `NODE_VERSION` — `22` (PDF reading needs Node ≥ 22.3 or 20.16–20.x; Render's
+   default depends on when the service was created).
+5. Merge the tracy-ai pull request (Render deploys `main`), then open `/diag`:
+   `dualrepLane` should say `configured: true` and `storageHostsSet: true`
+   (it shows yes/no and the strong model only, never a secret).
+
+The whole founder walkthrough, in order and click by click (Render, then
+DualRep's GitHub secrets, its **Deploy backend** workflow, PowerSync and the
+app), with a troubleshooting table, is in DualRep's
+[`docs/SETUP.md` §17](https://github.com/FabianB14/DualRep/blob/main/docs/SETUP.md#17-phase-2-the-study-engine-on-your-phone) (on DualRep's
+`main` once its Phase 2 pull request is merged; until then on its branch
+`claude/bold-fermi-oglgch`).
+
+Other knobs (all optional, in `.env.example`): `TRACY_TASK_EFFORT_STRONG`,
+`TRACY_TASK_EFFORT_FAST`, `TRACY_TASK_TIMEOUT_MS`, `TRACY_TASK_FALLBACKS`, `DUALREP_RENDER_WIDTH`,
+`EXTRACT_MAX_BYTES` (25 MiB), `EXTRACT_MAX_LINK_BYTES` (5 MiB),
+`EXTRACT_MAX_PAGES` (100), `EXTRACT_TIMEOUT_MS` (20 s), `EXTRACT_BUDGET_MS`
+(60 s), `EXTRACT_MIN_PAGE_CHARS` (10). On Render's free plan (0.1 CPU, sleeps
+after 15 idle minutes) the first call after a sleep can take about a minute;
+DualRep's worker wakes Tracy with `GET /health` first and retries on its next
+run. If big PDFs are slow, lower `EXTRACT_MAX_PAGES` or move to a paid plan.
 
 ### Toggling the AI lane from chat (admins)
 
@@ -230,7 +337,9 @@ configured. Existing knowledge-base and PartOut Gemini-first routing is unchange
 
 `/ai/tasks/:task` also falls back to Groq, preserves forced-tool output validation
 and the service-secret gate, and reports the actual response model. It never
-substitutes a text-only Gemini answer for a structured task result.
+substitutes a text-only Gemini answer for a structured task result. The
+exception is DualRep: its `dualrep_*` tasks (`allowFallback: false`) and
+`/ai/extract` never use Groq.
 
 Chat responses identify Groq backup and use `path: "groq-fallback"`; these answers
 are excluded from knowledge caching. `/diag` reports `modelFallback.configured`,

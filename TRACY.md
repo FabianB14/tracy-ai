@@ -22,8 +22,9 @@ server.
 ## How to verify
 - `node --check` every changed JS file.
 - For server changes, start with `npm start` and hit the endpoint with curl.
-- There is no test suite yet; if you add behavior, add a small script under
-  scripts/ or an inline node check that proves it.
+- `npm test` runs `node --test tests/*.test.js` (node:test, fake clients, no
+  network). The AI task lane tests (aitasks, dualrep-tasks, extract, groq,
+  apierrors) need no node_modules. If you add behavior, add a test there.
 
 ## Do not
 - Do not push to any remote. Commit locally and stop.

@@ -35,7 +35,8 @@ import { canAnswerFromKnowledge, cleanBackupHistory, stripBackupBanner } from ".
 import { prepareRegistrationCall, registrationReply } from "./registration.js";
 import { classifyModelError, worthFallingBack } from "./apierrors.js";
 import { logAnswer, getAnswerStats } from "./answerlog.js";
-import { runTask, taskModel, requireServiceSecret } from "./aitasks.js";
+import { TASKS, runTask, taskModel, requireServiceSecret, callerMayRun, taskLogEntry } from "./aitasks.js";
+import { extractLimits, fetchLimited, extractFromBuffer, makeRenderPdfPages, storageHosts } from "./extract.js";
 
 // Tools whose answers are LIVE/time-sensitive — never cache these as knowledge.
 const DYNAMIC_TOOLS = new Set([
@@ -557,6 +558,14 @@ app.get("/diag", async (req, res) => {
     ? await pingInterverseAdmin()
     : { ok: false, reason: "skipped (pass ?userId=<an ADMIN_USER_IDS value> to run the live check)" };
 
+  // DualRep's lane (POST /ai/tasks/dualrep_*, /ai/extract): yes/no wiring only,
+  // never a secret or a host name.
+  out.dualrepLane = {
+    configured: Boolean(process.env.SERVICE_SECRET_DUALREP),
+    storageHostsSet: storageHosts().length > 0,
+    strongModel: taskModel("strong"),
+  };
+
   res.json(out);
 });
 
@@ -677,41 +686,129 @@ app.post("/tasks/daily", async (req, res) => {
   res.json({ ok: true, considered: subs.length, delivered: results.filter((r) => r.delivered).length, results });
 });
 
+// Scanned PDF pages for dualrep_transcribe_pdf_pages: download the signed
+// URL and render just the requested pages, in memory (src/extract.js).
+const renderPdfPages = makeRenderPdfPages();
+
 // POST /ai/tasks/:task — the machine-to-machine AI task lane (see src/aitasks.js).
-// Other Interverse backends call this for structured AI jobs (first task:
-// convert_asset — cross-game asset conversion). The output is guaranteed JSON:
-// Claude is forced through a tool call and the result is validated before it's
-// returned. Auth is a shared secret, fail-closed like /tasks/daily:
-//   header  X-Service-Secret: <SERVICE_SECRET>
+// Other backends call this for structured AI jobs: Interverse (convert_asset —
+// cross-game asset conversion) and DualRep (dualrep_* study tasks). The output
+// is guaranteed JSON (a forced tool call or structured outputs) and is
+// validated before it's returned. Auth is one shared secret per caller,
+// fail-closed like /tasks/daily, and each caller runs only its own tasks:
+//   header  X-Service-Secret: <SERVICE_SECRET>          (Interverse)
+//   header  X-Service-Secret: <SERVICE_SECRET_DUALREP>  (DualRep)
 app.post("/ai/tasks/:task", requireServiceSecret, async (req, res) => {
+  const taskName = req.params.task;
   const { input, request_id } = req.body || {};
+  // Same 403 as a wrong secret: a caller can't probe another caller's tasks.
+  if (!callerMayRun(req.serviceCaller, taskName)) return res.status(403).json({ error: "forbidden" });
+  const task = Object.prototype.hasOwnProperty.call(TASKS, taskName) ? TASKS[taskName] : null;
+  // DualRep's uploads are private (and may be copyrighted): its tasks log one
+  // metadata line, never the material, and never go to a third provider.
+  const metaOnly = task?.log === "meta";
+  const started = Date.now();
   try {
-    const result = await runTask(req.params.task, input, { client: withGroqFallback(anthropic), model: taskModel() });
+    const client = task && task.allowFallback === false ? anthropic : withGroqFallback(anthropic);
+    const result = await runTask(taskName, input, { client, deps: { renderPdfPages } });
 
-    // Same training-data pipeline as /chat: every conversion is future
-    // fine-tuning fuel for exactly the kind of narrow task worth distilling.
-    logConversation({
-      userId: "service:interverse",
-      surface: "service:" + req.params.task,
-      messages: [{ role: "user", content: JSON.stringify(input) }],
-      reply: JSON.stringify(result.output),
-      toolsUsed: ["ai_task:" + req.params.task],
-    });
+    if (metaOnly) {
+      console.log(JSON.stringify(taskLogEntry({
+        caller: req.serviceCaller, task: taskName, requestId: request_id, ok: true, status: 200,
+        model: result.model, usage: result.usage, latencyMs: Date.now() - started, attempts: result.attempts,
+        stopReason: result.stop_reason, fallback: result.fallback,
+      })));
+    } else {
+      // Same training-data pipeline as /chat: every conversion is future
+      // fine-tuning fuel for exactly the kind of narrow task worth distilling.
+      logConversation({
+        userId: "service:" + req.serviceCaller,
+        surface: "service:" + taskName,
+        messages: [{ role: "user", content: JSON.stringify(input) }],
+        reply: JSON.stringify(result.output),
+        toolsUsed: ["ai_task:" + taskName],
+      });
+    }
 
-    const body = { ok: true, task: req.params.task, output: result.output, model: result.model, usage: result.usage };
+    const body = { ok: true, task: taskName, output: result.output, model: result.model, usage: result.usage, latency_ms: result.latency_ms };
     if (request_id) body.request_id = request_id;
     res.json(body);
   } catch (err) {
     // Never a bare 500: 400 = caller mistake (unknown task / bad input),
-    // anything else = 502 (model call failed or returned unusable output).
-    console.error(`ai task ${req.params.task} failed:`, err.message || err);
+    // 413/415/422 = the input's file can't be read, 503 = not available on
+    // this server, anything else = 502 (model call failed or returned
+    // unusable output). `code` says which; `errors` lists validator findings.
     const status = Number.isInteger(err.status) ? err.status : 502;
-    res.status(status).json({ ok: false, error: String(err.message || err) });
+    if (metaOnly) {
+      console.log(JSON.stringify(taskLogEntry({
+        caller: req.serviceCaller, task: taskName, requestId: request_id, ok: false, status, code: err.code || null,
+        latencyMs: Date.now() - started, errorCount: Array.isArray(err.errors) ? err.errors.length : 0,
+        category: err.category || null,
+      })));
+    } else {
+      console.error(`ai task ${taskName} failed:`, err.message || err);
+    }
+    // runTask's own errors are content-free for private tasks; anything
+    // unexpected gets a fixed message there instead of its free text.
+    const message = metaOnly && !err.code ? "task failed" : String(err.message || err);
+    const body = { ok: false, error: message };
+    if (err.code) body.code = err.code;
+    if (err.category) body.category = err.category;
+    if (Array.isArray(err.errors)) body.errors = err.errors;
+    if (request_id) body.request_id = request_id;
+    res.status(status).json(body);
+  }
+});
+
+// POST /ai/extract — stateless per-page text extraction for DualRep (src/extract.js).
+//   header  X-Service-Secret: <SERVICE_SECRET_DUALREP>   (any other caller: 403)
+//   body    { url, kind: "pdf"|"doc"|"link", first_page?, max_pages?, request_id? }
+// pdf/doc urls must be signed Storage URLs on DUALREP_STORAGE_HOSTS; a link
+// may be any public https page. The file lives only in memory for this
+// request; the log line carries counts, never text. Errors: { ok:false,
+// error, code } with 400/413/415/422/503 (see README "DualRep lane").
+app.post("/ai/extract", requireServiceSecret, async (req, res) => {
+  if (req.serviceCaller !== "dualrep") return res.status(403).json({ error: "forbidden" });
+  const { url, kind, first_page, max_pages, request_id } = req.body || {};
+  const started = Date.now();
+  const log = (ok, status, extra = {}) => console.log(JSON.stringify({
+    ...taskLogEntry({ caller: req.serviceCaller, task: "extract", requestId: request_id, ok, status, latencyMs: Date.now() - started }),
+    ...extra,
+  }));
+  try {
+    const bad = (message) => Object.assign(new Error(message), { status: 400, code: "bad_input" });
+    if (!["pdf", "doc", "link"].includes(kind)) throw bad("kind must be pdf, doc or link");
+    if (typeof url !== "string" || url.length > 4096) throw bad("url must be a string");
+    const limits = extractLimits();
+    const firstPage = first_page === undefined || first_page === null ? 1 : first_page;
+    if (!Number.isInteger(firstPage) || firstPage < 1) throw bad("first_page must be an integer >= 1");
+    if (max_pages !== undefined && max_pages !== null && (!Number.isInteger(max_pages) || max_pages < 1 || max_pages > limits.maxPages)) {
+      throw bad(`max_pages must be an integer from 1 to ${limits.maxPages}`);
+    }
+    const { buffer, contentType } = await fetchLimited(url, { kind, maxBytes: kind === "link" ? limits.maxLinkBytes : limits.maxBytes, timeoutMs: limits.timeoutMs });
+    const out = await extractFromBuffer({ buffer, contentType, kind, firstPage, maxPages: max_pages ?? undefined }, { limits });
+    log(true, 200, { format: out.format, bytes: buffer.length, pages: out.pages.length, scanned: out.pages.filter((p) => p.needs_transcription).length });
+    const body = { ok: true, kind, ...out, bytes: buffer.length, latency_ms: Date.now() - started };
+    if (request_id) body.request_id = request_id;
+    res.json(body);
+  } catch (err) {
+    const known = Number.isInteger(err.status) && typeof err.code === "string";
+    const status = known ? err.status : 502;
+    log(false, status, { code: known ? err.code : "extract_failed" });
+    if (!known) console.error("extract failed:", err?.name || "Error"); // the kind only, never a message that could quote the file
+    const body = known ? { ok: false, error: String(err.message), code: err.code } : { ok: false, error: "extraction failed", code: "extract_failed" };
+    if (request_id) body.request_id = request_id;
+    res.status(status).json(body);
   }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Tracy is listening on :${PORT}`));
+// One secret per caller: if both are set to the same value, every request
+// resolves to Interverse and DualRep gets 403 on all its tasks. Say why.
+if (process.env.SERVICE_SECRET_DUALREP && process.env.SERVICE_SECRET_DUALREP === process.env.SERVICE_SECRET) {
+  console.warn("SERVICE_SECRET_DUALREP equals SERVICE_SECRET: DualRep's calls will be treated as Interverse's and refused. Give DualRep its own secret.");
+}
 checkGroqModel().then(result => { if (result) console.log("Groq startup check:", JSON.stringify(result)); });
 
 // Boot maintenance, best-effort and off the request path:
