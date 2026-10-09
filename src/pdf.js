@@ -68,15 +68,40 @@ export async function extractPdfPages(buffer, { first = 1, last, deadline = Infi
   }
 }
 
-// PNG renders of the given pages, for vision transcription of scans.
-// width: the rendered page width in px. 1568 keeps a portrait page (about
-// 1568 x 2218) inside the 2576 px long edge Claude's high-resolution tier
-// reads without downscaling. Pages past the end are skipped by pdf-parse.
-export async function renderPdfPagesPng(buffer, pages, { width = 1568 } = {}) {
+// JPEG renders of the given pages, for vision transcription of scans
+// (DualRep). Pages are rendered one at a time and each canvas is freed before
+// the next, so a 4-page call holds one page bitmap instead of four; and JPEG
+// (quality 85), because a scanned page as PNG costs about a second of CPU and
+// 6-8 MB, as JPEG well under a tenth of a second and a few hundred KB, which
+// keeps the request far under the API's 32 MB. width: 1568 keeps a portrait
+// page (about 1568 x 2218) inside the 2576 px long edge Claude's
+// high-resolution tier reads without downscaling. Pages past the end are
+// skipped. `deadline` (a Date.now() value) is checked between pages: past it
+// the render stops with code render_timeout, so the model call keeps its
+// share of the task's time budget.
+export async function renderPdfPagesJpeg(buffer, pages, { width = 1568, quality = 85, deadline = Infinity } = {}) {
   const parser = await openPdf(buffer);
   try {
-    const r = await parser.getScreenshot({ partial: pages, desiredWidth: width, imageDataUrl: false, imageBuffer: true });
-    return (r.pages || []).map((p) => ({ page: p.pageNumber, mediaType: "image/png", data: Buffer.from(p.data).toString("base64") }));
+    const doc = await parser.load();
+    const out = [];
+    for (const n of pages) {
+      if (!Number.isInteger(n) || n < 1 || n > doc.numPages) continue;
+      if (Date.now() >= deadline) throw Object.assign(new Error("rendering ran out of time"), { code: "render_timeout" });
+      const page = await doc.getPage(n);
+      const viewport = page.getViewport({ scale: width / page.getViewport({ scale: 1 }).width });
+      const factory = doc.canvasFactory;
+      const target = factory.create(viewport.width, viewport.height);
+      try {
+        await page.render({ canvasContext: target.context, viewport, canvas: target.canvas }).promise;
+        // encode() runs off the JavaScript thread (@napi-rs/canvas).
+        const jpeg = await target.canvas.encode("jpeg", quality);
+        out.push({ page: n, mediaType: "image/jpeg", data: Buffer.from(jpeg).toString("base64") });
+      } finally {
+        factory.destroy(target);
+        page.cleanup();
+      }
+    }
+    return out;
   } finally {
     try { await parser.destroy(); } catch { /* ignore */ }
   }

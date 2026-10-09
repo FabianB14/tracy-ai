@@ -128,9 +128,10 @@ tests with `npm test`.
 turns a person's course PDFs, documents, links and photos of handwritten notes
 into a study plan and quiz cards. Its Supabase Edge Function worker runs the
 pipeline one short step at a time and calls Tracy for the AI parts. Tracy
-stores nothing: files live in memory for one request, and every DualRep call
-logs **one metadata line** (caller, task, request id, status, code, model,
-token counts, latency) — never the material, the answer or an error's text.
+stores nothing on disk: files live in memory (the last Storage file for up to
+10 minutes, see below), and every DualRep call logs **one metadata line**
+(caller, task, request id, status, code, model, token counts, latency) — never
+the material, the answer or an error's text.
 DualRep's tasks **never fall back to Groq** (private, possibly copyrighted
 uploads stay with Anthropic).
 
@@ -139,10 +140,10 @@ caller gets 403):
 
 | Call | What it does |
 |---|---|
-| `POST /ai/extract` | `{url, kind: "pdf"\|"doc"\|"link", first_page?, max_pages?, request_id?}` → per-page text chunks. `url` is a signed Storage URL (a `link` may be any public https page). Returns `{ok, kind, format, bytes, total_pages, first_page, last_page, title, pages:[{page, chars, letters, needs_transcription, chunks:[{ordinal, title, content}]}], latency_ms}`. A docx or web page is one entry with `page: null`. Pages without a text layer come back `needs_transcription: true`. When `last_page < total_pages`, call again with `first_page = last_page + 1` (a slow parse stops early and says so in `last_page`). Errors: 400 `bad_input`/`bad_url`, 413 `too_large`, 415 `unsupported_type`, 422 `fetch_failed`/`timeout`/`pdf_encrypted`/`pdf_unreadable`/`doc_unreadable`/`no_text`, 503 `pdf_unavailable`/`doc_unavailable`. |
-| `POST /ai/tasks/dualrep_transcribe_notes` | One photo of handwritten notes (`{image_url, page, subject?, previous_errors?}`) → `{status: "draft", page: {page, blank, transcript, legibility, uncertain[], diagrams[]}}`. Anthropic fetches the photo from the signed URL. JPEG/PNG/WebP only (the app converts HEIC). |
-| `POST /ai/tasks/dualrep_transcribe_pdf_pages` | 1–4 scanned pages of a PDF (`{pdf_url, pages, subject?, previous_errors?}`) → `{status: "draft", pages: [...]}`. Tracy renders only those pages to images, so a big scan isn't billed in full on every call. |
-| `POST /ai/tasks/dualrep_build_outline` | `{plan, existing_topics?, chunks: [{id, page, title?, excerpt ≤ 400}] (1–600), max_topics ≤ 40}` → `{topics: [{key, title, summary, existing_topic_id, chunk_ids}], unassigned_chunk_ids}`. Every chunk appears exactly once. |
+| `POST /ai/extract` | `{url, kind: "pdf"\|"doc"\|"link", first_page?, max_pages?, request_id?}` → per-page text chunks. `url` is a signed Storage URL (a `link` may be any public https page). Returns `{ok, kind, format, bytes, total_pages, first_page, last_page, title, pages:[{page, chars, letters, needs_transcription, chunks:[{ordinal, title, content}]}], latency_ms}`. A docx or web page is one entry with `page: null`. Pages without a text layer come back `needs_transcription: true`. When `last_page < total_pages`, call again with `first_page = last_page + 1` (a slow parse stops early and says so in `last_page`). Errors: 400 `bad_input`/`bad_url`, 413 `too_large` (also a file that needs more than `EXTRACT_MAX_MEMORY_MB` to read, or more than 3 million characters of text), 415 `unsupported_type`, 422 `fetch_failed`/`timeout`/`pdf_encrypted`/`pdf_unreadable`/`doc_unreadable`/`no_text`, 503 `busy` (another file is being read: try again shortly) / `pdf_unavailable`/`doc_unavailable`. |
+| `POST /ai/tasks/dualrep_transcribe_notes` | One photo of handwritten notes (`{image_url, page, subject?, previous_errors?}`) → `{status: "draft", page: {page, blank, transcript, legibility, uncertain[], diagrams[]}}`. Anthropic fetches the photo from the signed URL. JPEG/PNG/WebP only (the app converts HEIC). A URL that isn't https on one of `DUALREP_STORAGE_HOSTS` is 400 `bad_url`, as on `/ai/extract`. |
+| `POST /ai/tasks/dualrep_transcribe_pdf_pages` | 1–4 scanned pages of a PDF (`{pdf_url, pages, subject?, previous_errors?}`) → `{status: "draft", pages: [...]}`. Tracy renders only those pages, one at a time, to JPEG in a child process, within `DUALREP_RENDER_BUDGET_MS` (else 503 `render_timeout`), so a big scan isn't billed in full on every call and the model keeps most of the time. 503 `busy` while another file is read. |
+| `POST /ai/tasks/dualrep_build_outline` | `{plan, existing_topics?, chunks: [{id, page, title?, excerpt ≤ 400}] (1–300), max_topics ≤ 40}` → `{topics: [{key, title, summary, existing_topic_id, chunk_ids}], unassigned_chunk_ids}`. Every chunk appears exactly once. The model sees short aliases (`c1`, `c2`, …) instead of your ids, so the answer stays small; you get your own ids back. |
 | `POST /ai/tasks/dualrep_build_cards` | One topic: `{plan, topic, chunks: [{id, page, content}] (1–40), existing_cards?, card_types, max_cards ≤ 20}` → `{cards: [{key, card_type, question, answer, source_chunk_id, page, quote}], links: [{from_key, to, relation, note}]}`. |
 
 The validators are the guardrails: transcriptions are always drafts for the
@@ -165,6 +166,18 @@ the same call. `TRACY_TASK_FALLBACKS=off` turns that off. A decline that
 remains comes back as `502 code: "refused"` (with `category`), an answer cut
 off at `max_tokens` as `code: "truncated"` — send less material rather than
 retrying as is.
+
+**Reading files safely.** The byte limits cap the download, not what a file
+unpacks to (a 100 KB .docx can hold 100 MB of text). So PDFs and .docx files
+are read, and scanned pages rendered, in a child process (`src/isolate.js`)
+that Tracy stops past `EXTRACT_MAX_MEMORY_MB` (350; Render's free plan has
+512 MB for everything) or its time limit; the file then fails with 413
+`too_large` and Tracy, Interverse and `/chat` stay up. One file is read at a
+time: a second request meanwhile gets 503 `busy`. The last Storage file read is
+kept in memory for up to 10 minutes and revalidated with `If-None-Match` on the
+next request for it (Storage still checks the new signed URL and answers 304 if
+it is unchanged), so the 50 batches of a 200-page scan don't download 25 MB
+each against DualRep's Supabase egress.
 
 **Costs** (estimates, not measured; from DualRep's Phase 2 research, re-check
 against real `usage` once it runs):
@@ -191,8 +204,9 @@ against the same monthly limit.
 4. `NODE_VERSION` — `22` (PDF reading needs Node ≥ 22.3 or 20.16–20.x; Render's
    default depends on when the service was created).
 5. Merge the tracy-ai pull request (Render deploys `main`), then open `/diag`:
-   `dualrepLane` should say `configured: true` and `storageHostsSet: true`
-   (it shows yes/no and the strong model only, never a secret).
+   `dualrepLane` should say `configured: true`, `storageHostsSet: true` and
+   `storageHostsLookValid: true` (it shows yes/no and the strong model only,
+   never a secret or a host).
 
 The whole founder walkthrough, in order and click by click (Render, then
 DualRep's GitHub secrets, its **Deploy backend** workflow, PowerSync and the
@@ -205,7 +219,8 @@ Other knobs (all optional, in `.env.example`): `TRACY_TASK_EFFORT_STRONG`,
 `TRACY_TASK_EFFORT_FAST`, `TRACY_TASK_TIMEOUT_MS`, `TRACY_TASK_FALLBACKS`, `DUALREP_RENDER_WIDTH`,
 `EXTRACT_MAX_BYTES` (25 MiB), `EXTRACT_MAX_LINK_BYTES` (5 MiB),
 `EXTRACT_MAX_PAGES` (100), `EXTRACT_TIMEOUT_MS` (20 s), `EXTRACT_BUDGET_MS`
-(60 s), `EXTRACT_MIN_PAGE_CHARS` (10). On Render's free plan (0.1 CPU, sleeps
+(60 s), `EXTRACT_MIN_PAGE_CHARS` (10), `EXTRACT_MAX_MEMORY_MB` (350),
+`EXTRACT_MAX_TEXT_CHARS` (3,000,000), `DUALREP_RENDER_BUDGET_MS` (45 s). On Render's free plan (0.1 CPU, sleeps
 after 15 idle minutes) the first call after a sleep can take about a minute;
 DualRep's worker wakes Tracy with `GET /health` first and retries on its next
 run. If big PDFs are slow, lower `EXTRACT_MAX_PAGES` or move to a paid plan.

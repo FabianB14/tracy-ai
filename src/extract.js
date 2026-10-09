@@ -2,18 +2,24 @@
 //
 // DualRep's worker sends a short-lived signed Storage URL (or a web link) and
 // gets back per-page text chunks it stores in its own database. Tracy stores
-// nothing: the file lives only in memory for this one request, and the route
-// logs metadata only (format, byte and page counts), never text.
+// nothing on disk: the file lives only in memory (the last Storage file for up
+// to 10 minutes, see makeDownloadCache), and the route logs metadata only
+// (format, byte and page counts), never text.
 // Page numbers are kept end to end, because every DualRep card cites a page.
 // Pages without a text layer (scans, photos) are flagged so the worker can
 // send them to the dualrep_transcribe_pdf_pages task instead.
 //
-// Top-level imports are Node built-ins only (pdf.js loads pdf-parse lazily),
-// so tests/extract.test.js runs without node_modules.
+// PDFs and .docx files are read in a child process with a memory and time
+// limit (src/isolate.js): what a small upload unpacks to is not limited by
+// its size, and Tracy's own process is shared with every other caller.
+//
+// Top-level imports are Node built-ins only (pdf.js loads pdf-parse lazily,
+// and only inside the child), so tests/extract.test.js runs without
+// node_modules.
 
 import dns from "node:dns/promises";
 import net from "node:net";
-import { extractPdfPages, renderPdfPagesPng } from "./pdf.js";
+import { runIsolated } from "./isolate.js";
 
 // A positive whole number from an env var, else the default. A typo in a
 // Render setting must not turn a limit into NaN (which compares as "no limit").
@@ -34,6 +40,14 @@ export function extractLimits(env = process.env) {
     // run past that and be retried forever.
     budgetMs: envInt(env.EXTRACT_BUDGET_MS, 60000),
     minPageChars: envInt(env.EXTRACT_MIN_PAGE_CHARS, 10), // fewer letters/digits than this = needs transcription
+    // The child process that reads a PDF or .docx is killed past this much
+    // memory (Render's free plan has 512 MB for everything; Tracy itself
+    // uses about 100 MB, and a scanned page renders in about 320 MB).
+    maxMemoryMb: envInt(env.EXTRACT_MAX_MEMORY_MB, 350),
+    // Text per answer: a real 300-page book is about 1.5 million characters.
+    // A PDF window stops early at this (last_page says where); a document or
+    // web page with more is refused as too large.
+    maxTextChars: envInt(env.EXTRACT_MAX_TEXT_CHARS, 3_000_000),
   };
 }
 
@@ -91,9 +105,14 @@ function decodeEntities(s) {
   });
 }
 
-// Elements whose whole content is dropped (page chrome, code, metadata).
+// Elements whose whole content is dropped (page chrome, code, metadata, the
+// contents of form controls). Not <form>: ASP.NET and SharePoint pages (common
+// on college sites) wrap the whole page in one, and the scanner never emits
+// attribute values (such as __VIEWSTATE) anyway. A <template> is inert
+// markup, except a declarative shadow root (<template shadowrootmode>), which
+// is what the page shows.
 const SKIP_ELEMENTS = new Set(["head", "title", "script", "style", "noscript", "svg", "nav", "header", "footer",
-  "aside", "form", "template", "iframe"]);
+  "aside", "template", "iframe", "select", "textarea", "button"]);
 // Closing one of these ends a paragraph.
 const BLOCK_ELEMENTS = new Set(["p", "div", "section", "article", "li", "ul", "ol", "table", "tr", "blockquote",
   "pre", "dd", "dt"]);
@@ -155,7 +174,8 @@ export function htmlToText(html) {
     const name = m[2];
     i = gt + 1;
 
-    if (!closing && SKIP_ELEMENTS.has(name)) {
+    const shadowRoot = name === "template" && /\sshadowrootmode\s*=/.test(lower.slice(lt, gt));
+    if (!closing && SKIP_ELEMENTS.has(name) && !shadowRoot) {
       if (src[gt - 1] === "/") continue; // self-closing, e.g. <svg … />
       const end = lower.indexOf("</" + name, i);
       if (end === -1) break; // never closed: the rest is inside it
@@ -221,9 +241,18 @@ export function isPrivateAddress(ip) {
 
 // The hosts DualRep's signed Storage URLs may come from. Empty = none: pdf
 // and doc extraction (and the transcription tasks) stay closed until the
-// founder sets DUALREP_STORAGE_HOSTS on Render.
+// founder sets DUALREP_STORAGE_HOSTS on Render. A pasted URL
+// ("https://<ref>.supabase.co/") counts as its host.
 export function storageHosts(env = process.env) {
-  return String(env.DUALREP_STORAGE_HOSTS || "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+  return String(env.DUALREP_STORAGE_HOSTS || "").split(",")
+    .map((h) => h.trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, "").replace(/[/?#].*$/, ""))
+    .filter(Boolean);
+}
+
+// For /diag: whether every entry looks like a host name (e.g. abc.supabase.co).
+export function storageHostsLookValid(env = process.env) {
+  const hosts = storageHosts(env);
+  return hosts.length > 0 && hosts.every((h) => /^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d{1,5})?$/.test(h));
 }
 
 export async function checkUrl(raw, { kind, env = process.env, lookup = dns.lookup } = {}) {
@@ -242,16 +271,50 @@ export async function checkUrl(raw, { kind, env = process.env, lookup = dns.look
   return u;
 }
 
-export async function fetchLimited(raw, { kind, maxBytes, timeoutMs, env = process.env, fetchImpl = fetch, lookup } = {}) {
+// DualRep reads a scanned PDF again for every 4-page batch it transcribes
+// (and for every 100-page text window), and each full download counts against
+// its Supabase project's monthly egress: a 25 MB, 200-page scan would cost
+// about 1.3 GB. So the most recent Storage file stays in memory for a while
+// (one file, refreshed on each use) and is revalidated with If-None-Match:
+// Storage still checks the new signed URL's token and answers 304 (headers
+// only) while the file is unchanged, or sends the new bytes. Links are never
+// cached. Pass `cache: null` to fetchLimited to skip it.
+export function makeDownloadCache({ ttlMs = 10 * 60_000, now = Date.now } = {}) {
+  let entry = null; // { key, etag, buffer, contentType, at }
+  return {
+    get(key) {
+      if (entry && now() - entry.at > ttlMs) entry = null;
+      return entry && entry.key === key ? entry : null;
+    },
+    set(key, value) { entry = { key, ...value, at: now() }; },
+    touch(key) { if (entry && entry.key === key) entry.at = now(); },
+    clear() { entry = null; },
+  };
+}
+
+export async function fetchLimited(raw, { kind, maxBytes, timeoutMs, env = process.env, fetchImpl = fetch, lookup, cache = null } = {}) {
   let url = raw;
   const signal = AbortSignal.timeout(timeoutMs); // one deadline for every hop and the body
+  // The file's identity without the signed URL's token (the query string).
+  let key = null;
+  if (cache && kind !== "link") {
+    try { const u = new URL(String(raw)); key = u.origin + u.pathname; } catch { key = null; }
+  }
+  const cached = key ? cache.get(key) : null;
   for (let hop = 0; hop <= 3; hop++) {
     await checkUrl(url, { kind: hop === 0 ? kind : "link", env, lookup });
+    const headers = { "user-agent": "TracyExtract/1.0", accept: "text/html,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain;q=0.8,*/*;q=0.1" };
+    if (cached) headers["if-none-match"] = cached.etag;
     let res;
     try {
-      res = await fetchImpl(url, { redirect: "manual", signal, headers: { "user-agent": "TracyExtract/1.0", accept: "text/html,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain;q=0.8,*/*;q=0.1" } });
+      res = await fetchImpl(url, { redirect: "manual", signal, headers });
     } catch (err) {
       throw fail(422, err?.name === "TimeoutError" ? "timeout" : "fetch_failed", "the file could not be downloaded");
+    }
+    if (cached && res.status === 304) {
+      await res.body?.cancel().catch(() => {});
+      cache.touch(key);
+      return { buffer: cached.buffer, contentType: cached.contentType, finalUrl: url, cached: true };
     }
     if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
       await res.body?.cancel().catch(() => {}); // free the connection
@@ -285,7 +348,11 @@ export async function fetchLimited(raw, { kind, maxBytes, timeoutMs, env = proce
         throw fail(422, err?.name === "TimeoutError" ? "timeout" : "fetch_failed", "the file could not be downloaded");
       }
     }
-    return { buffer: Buffer.concat(parts), contentType: (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase(), finalUrl: url };
+    const buffer = Buffer.concat(parts);
+    const contentType = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    const etag = res.headers.get("etag");
+    if (key && etag) cache.set(key, { etag, buffer, contentType });
+    return { buffer, contentType, finalUrl: url };
   }
   throw fail(422, "fetch_failed", "too many redirects");
 }
@@ -316,19 +383,31 @@ function sniff(buffer, contentType) {
   return null;
 }
 
-async function defaultLoadMammoth() {
-  try {
-    return (await import("mammoth")).default;
-  } catch {
-    throw fail(503, "doc_unavailable", "document support isn't available on this server");
-  }
+// The readers extractFromBuffer uses unless a test passes its own: pdf.js and
+// mammoth, each in a child process (src/isolate.js) with the memory limit and
+// a time limit of the parse budget plus a margin (the budget normally ends a
+// PDF window early on its own; the margin covers one slow page).
+function isolatedPdf(limits) {
+  return {
+    extractPdfPages: (buffer, args) => runIsolated("pdfText", buffer, args, { maxMemoryMb: limits.maxMemoryMb, timeoutMs: limits.budgetMs + 20_000 }),
+  };
 }
+function isolatedMammoth(limits) {
+  return {
+    convertToHtml: async ({ buffer }) => ({ value: await runIsolated("docxHtml", buffer, {}, { maxMemoryMb: limits.maxMemoryMb, timeoutMs: limits.budgetMs + 20_000 }) }),
+  };
+}
+
+// Errors that already carry their answer (busy 503, too_large 413 from the
+// child's memory limit) go to the caller as they are.
+const answered = (err) => Number.isInteger(err?.status) && typeof err?.code === "string";
 
 // buffer + kind -> { format, total_pages, first_page, last_page, title, pages[] }
 //   pdf: one entry per page in [firstPage, firstPage + maxPages - 1], fewer if
-//        the parse budget ran out (last_page says where it stopped)
+//        the parse budget ran out or the text limit was reached (last_page
+//        says where it stopped)
 //   docx, html, text: one entry with page null (they have no pages)
-export async function extractFromBuffer({ buffer, contentType = "", kind, firstPage = 1, maxPages }, { limits, pdf = { extractPdfPages }, loadMammoth = defaultLoadMammoth, now = Date.now } = {}) {
+export async function extractFromBuffer({ buffer, contentType = "", kind, firstPage = 1, maxPages }, { limits, pdf = isolatedPdf(limits), loadMammoth = async () => isolatedMammoth(limits), now = Date.now } = {}) {
   const format = sniff(buffer, contentType);
   if (!format) throw fail(415, "unsupported_type", "this file type can't be read (send PDF, DOCX, HTML or plain text)");
   if (kind === "pdf" && format !== "pdf") throw fail(415, "unsupported_type", "kind is pdf but the file is not a PDF");
@@ -339,42 +418,72 @@ export async function extractFromBuffer({ buffer, contentType = "", kind, firstP
     try {
       r = await pdf.extractPdfPages(buffer, { first: firstPage, last, deadline: now() + limits.budgetMs });
     } catch (err) {
+      if (answered(err)) throw err;
       if (err?.code === "pdf_unavailable") throw fail(503, "pdf_unavailable", "PDF support isn't available on this server");
       if (/password/i.test(err?.name || "") || /password/i.test(err?.message || "")) throw fail(422, "pdf_encrypted", "the PDF is password-protected");
       throw fail(422, "pdf_unreadable", "the PDF could not be read");
     }
-    const pages = r.pages.map((p) => pageEntry(p.num, p.text, limits));
+    // Stop the window at the text limit (at least one page, so the caller
+    // always moves on); a single page over it is refused.
+    const kept = [];
+    let chars = 0;
+    for (const p of r.pages) {
+      chars += String(p.text || "").length;
+      if (chars > limits.maxTextChars) {
+        if (!kept.length) throw fail(413, "too_large", "a page has more text than can be read at once");
+        break;
+      }
+      kept.push(p);
+    }
+    const pages = kept.map((p) => pageEntry(p.num, p.text, limits));
     const lastPage = pages.length ? pages[pages.length - 1].page : Math.min(last, r.total);
     return { format, total_pages: r.total, first_page: firstPage, last_page: lastPage, title: "", pages };
   }
   let title = "", text;
   if (format === "docx") {
     const mammoth = await loadMammoth();
-    const r = await mammoth.convertToHtml({ buffer }).catch(() => { throw fail(422, "doc_unreadable", "the document could not be read"); });
+    const r = await mammoth.convertToHtml({ buffer }).catch((err) => {
+      if (answered(err)) throw err;
+      if (err?.code === "doc_unavailable") throw fail(503, "doc_unavailable", "document support isn't available on this server");
+      throw fail(422, "doc_unreadable", "the document could not be read");
+    });
+    if (r.value.length > limits.maxTextChars * 4) throw fail(413, "too_large", "the document has more text than can be read at once");
     text = htmlToText(r.value).text; // via HTML so headings survive as chunk titles
   } else if (format === "html") {
     ({ title, text } = htmlToText(buffer.toString("utf8")));
   } else {
     text = buffer.toString("utf8");
   }
+  if (text.length > limits.maxTextChars) throw fail(413, "too_large", "the document has more text than can be read at once");
   const entry = pageEntry(null, text, limits);
   if (entry.needs_transcription) throw fail(422, "no_text", "no readable text was found");
   return { format, total_pages: null, first_page: null, last_page: null, title, pages: [entry] };
 }
 
 // For dualrep_transcribe_pdf_pages: download the signed URL and render the
-// requested pages to PNG in memory. Only those pages are sent to Claude, so a
-// 4-page call on a 300-page scan bills 4 images, not 300 pages.
-export function makeRenderPdfPages({ env = process.env, fetchImpl, lookup, render = renderPdfPagesPng } = {}) {
+// requested pages to JPEG, in a child process (src/isolate.js), one page at a
+// time. Only those pages are sent to Claude, so a 4-page call on a 300-page
+// scan bills 4 images, not 300 pages. The render has its own time budget
+// (DUALREP_RENDER_BUDGET_MS, 45 s): the model call keeps the rest of the
+// task's 105 s (runTask takes preparation time off it), and a render that
+// runs out of time is a 503 render_timeout the worker tries again later.
+// `cache`: see makeDownloadCache (the batches of one scan reuse the file).
+export function makeRenderPdfPages({ env = process.env, fetchImpl, lookup, render, cache = null } = {}) {
   return async (url, pages) => {
     const limits = extractLimits(env);
-    const { buffer } = await fetchLimited(url, { kind: "pdf", maxBytes: limits.maxBytes, timeoutMs: limits.timeoutMs, env, fetchImpl, lookup });
+    const { buffer } = await fetchLimited(url, { kind: "pdf", maxBytes: limits.maxBytes, timeoutMs: limits.timeoutMs, env, fetchImpl, lookup, cache });
     if (buffer.subarray(0, 5).toString("latin1") !== "%PDF-") throw fail(415, "unsupported_type", "the file is not a PDF");
     const width = envInt(env.DUALREP_RENDER_WIDTH, 1568);
+    const budgetMs = envInt(env.DUALREP_RENDER_BUDGET_MS, 45_000);
+    const opts = { width, quality: 85, deadline: Date.now() + budgetMs };
     let shots;
     try {
-      shots = await render(buffer, pages, { width });
+      shots = render
+        ? await render(buffer, pages, opts)
+        : await runIsolated("pdfRender", buffer, { pages, ...opts }, { maxMemoryMb: limits.maxMemoryMb, timeoutMs: budgetMs + 15_000 });
     } catch (err) {
+      if (answered(err)) throw err;
+      if (err?.code === "render_timeout" || err?.code === "isolate_timeout") throw fail(503, "render_timeout", "rendering the pages took too long; try again");
       if (err?.code === "pdf_unavailable") throw fail(503, "pdf_unavailable", "PDF support isn't available on this server");
       if (/password/i.test(err?.name || "") || /password/i.test(err?.message || "")) throw fail(422, "pdf_encrypted", "the PDF is password-protected");
       throw fail(422, "pdf_unreadable", "the PDF pages could not be rendered");
@@ -383,6 +492,12 @@ export function makeRenderPdfPages({ env = process.env, fetchImpl, lookup, rende
     // the model to transcribe a page it never sees.
     const got = new Set((shots || []).map((s) => s.page));
     if (!pages.every((p) => got.has(p))) throw fail(422, "page_out_of_range", "a requested page is not in the PDF");
+    // The API refuses a request over 32 MB; JPEG pages are a few hundred KB,
+    // so only something pathological gets near this.
+    const bytes = shots.reduce((sum, s) => sum + String(s.data || "").length, 0);
+    if (bytes > MAX_RENDER_BYTES) throw fail(413, "too_large", "the rendered pages are too large to send");
     return pages.map((p) => shots.find((s) => s.page === p));
   };
 }
+
+const MAX_RENDER_BYTES = 24 * 1024 * 1024;

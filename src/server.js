@@ -36,7 +36,7 @@ import { prepareRegistrationCall, registrationReply } from "./registration.js";
 import { classifyModelError, worthFallingBack } from "./apierrors.js";
 import { logAnswer, getAnswerStats } from "./answerlog.js";
 import { TASKS, runTask, taskModel, requireServiceSecret, callerMayRun, taskLogEntry } from "./aitasks.js";
-import { extractLimits, fetchLimited, extractFromBuffer, makeRenderPdfPages, storageHosts } from "./extract.js";
+import { extractLimits, fetchLimited, extractFromBuffer, makeRenderPdfPages, makeDownloadCache, storageHosts, storageHostsLookValid } from "./extract.js";
 
 // Tools whose answers are LIVE/time-sensitive — never cache these as knowledge.
 const DYNAMIC_TOOLS = new Set([
@@ -563,6 +563,8 @@ app.get("/diag", async (req, res) => {
   out.dualrepLane = {
     configured: Boolean(process.env.SERVICE_SECRET_DUALREP),
     storageHostsSet: storageHosts().length > 0,
+    // false = an entry isn't a bare host like <ref>.supabase.co (a typo, a path).
+    storageHostsLookValid: storageHostsLookValid(),
     strongModel: taskModel("strong"),
   };
 
@@ -687,8 +689,11 @@ app.post("/tasks/daily", async (req, res) => {
 });
 
 // Scanned PDF pages for dualrep_transcribe_pdf_pages: download the signed
-// URL and render just the requested pages, in memory (src/extract.js).
-const renderPdfPages = makeRenderPdfPages();
+// URL and render just the requested pages, in memory (src/extract.js). The
+// most recent Storage file is kept for the next batch of the same scan and
+// revalidated each time (makeDownloadCache), shared with /ai/extract.
+const storageCache = makeDownloadCache();
+const renderPdfPages = makeRenderPdfPages({ cache: storageCache });
 
 // POST /ai/tasks/:task — the machine-to-machine AI task lane (see src/aitasks.js).
 // Other backends call this for structured AI jobs: Interverse (convert_asset —
@@ -764,9 +769,11 @@ app.post("/ai/tasks/:task", requireServiceSecret, async (req, res) => {
 //   header  X-Service-Secret: <SERVICE_SECRET_DUALREP>   (any other caller: 403)
 //   body    { url, kind: "pdf"|"doc"|"link", first_page?, max_pages?, request_id? }
 // pdf/doc urls must be signed Storage URLs on DUALREP_STORAGE_HOSTS; a link
-// may be any public https page. The file lives only in memory for this
-// request; the log line carries counts, never text. Errors: { ok:false,
-// error, code } with 400/413/415/422/503 (see README "DualRep lane").
+// may be any public https page. The file lives only in memory (a PDF or
+// .docx is read in a child process with a memory limit; the last Storage file
+// is kept for the next batch, see makeDownloadCache); the log line carries
+// counts, never text. Errors: { ok:false, error, code } with
+// 400/413/415/422/503 (see README "DualRep lane").
 app.post("/ai/extract", requireServiceSecret, async (req, res) => {
   if (req.serviceCaller !== "dualrep") return res.status(403).json({ error: "forbidden" });
   const { url, kind, first_page, max_pages, request_id } = req.body || {};
@@ -785,7 +792,7 @@ app.post("/ai/extract", requireServiceSecret, async (req, res) => {
     if (max_pages !== undefined && max_pages !== null && (!Number.isInteger(max_pages) || max_pages < 1 || max_pages > limits.maxPages)) {
       throw bad(`max_pages must be an integer from 1 to ${limits.maxPages}`);
     }
-    const { buffer, contentType } = await fetchLimited(url, { kind, maxBytes: kind === "link" ? limits.maxLinkBytes : limits.maxBytes, timeoutMs: limits.timeoutMs });
+    const { buffer, contentType } = await fetchLimited(url, { kind, maxBytes: kind === "link" ? limits.maxLinkBytes : limits.maxBytes, timeoutMs: limits.timeoutMs, cache: storageCache });
     const out = await extractFromBuffer({ buffer, contentType, kind, firstPage, maxPages: max_pages ?? undefined }, { limits });
     log(true, 200, { format: out.format, bytes: buffer.length, pages: out.pages.length, scanned: out.pages.filter((p) => p.needs_transcription).length });
     const body = { ok: true, kind, ...out, bytes: buffer.length, latency_ms: Date.now() - started };

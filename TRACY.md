@@ -23,8 +23,9 @@ server.
 - `node --check` every changed JS file.
 - For server changes, start with `npm start` and hit the endpoint with curl.
 - `npm test` runs `node --test tests/*.test.js` (node:test, fake clients, no
-  network). The AI task lane tests (aitasks, dualrep-tasks, extract, groq,
-  apierrors) need no node_modules. If you add behavior, add a test there.
+  network). The AI task lane tests (aitasks, dualrep-tasks, extract, isolate,
+  groq, apierrors) need no node_modules (extract's real-library cases skip
+  without them). If you add behavior, add a test there.
 
 ## Do not
 - Do not push to any remote. Commit locally and stop.

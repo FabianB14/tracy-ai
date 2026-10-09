@@ -39,7 +39,13 @@ function httpError(status, message, extra = {}) {
 //   checkOutput(out, input) — validator; returns an array of error strings
 //                        ([] = ok). Never echo input content in them.
 // and optionally (the defaults are convert_asset's original behavior):
-//   checkInput(input, { env }) — caller mistakes, as error strings (400)
+//   checkInput(input, { env }) — caller mistakes, as error strings (400
+//                        bad_input); it may instead throw an error with its
+//                        own .status and .code (a URL off the storage hosts:
+//                        400 bad_url)
+//   mapOutput(out, input) — turns the model's answer back into the caller's
+//                        terms before checkOutput (the outline's short chunk
+//                        aliases into the caller's ids)
 //   caller        "interverse" | "dualrep" — who may run it (default interverse)
 //   tier          "fast" | "strong" — which model env var applies (taskModel)
 //   maxTokens     default 1024; on 5.x models this includes thinking
@@ -353,6 +359,7 @@ export async function runTask(taskName, input, { client, model, env = process.en
     output = block.input;
   }
 
+  if (task.mapOutput) output = task.mapOutput(output, input);
   const errors = task.checkOutput(output, input);
   if (errors.length > 0) {
     throw httpError(502, `model output failed validation: ${errors.join("; ")}`, { code: "invalid_output", errors: errors.slice(0, MAX_RETURNED_ERRORS) });

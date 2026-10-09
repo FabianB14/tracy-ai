@@ -264,11 +264,23 @@ test("unknown and inherited task names are 400s", async () => {
 
 test("transcribe_notes refuses URLs outside the storage host, and stays closed when none is set", async () => {
   const run = (input, env = ENV) => runTask("dualrep_transcribe_notes", input, { client: fakeClient({}), env });
+  // bad_url, the code /ai/extract uses too: DualRep then says the setup is incomplete
+  // (DUALREP_STORAGE_HOSTS), not "try again".
   for (const url of ["https://evil.example/a.jpg", "http://abc.supabase.co/a.jpg", "https://user:pw@abc.supabase.co/a.jpg", "not a url"]) {
-    await assert.rejects(run({ image_url: url, page: 1 }), (e) => e.status === 400 && e.code === "bad_input", url);
+    await assert.rejects(run({ image_url: url, page: 1 }), (e) => e.status === 400 && e.code === "bad_url", url);
   }
-  await assert.rejects(run({ image_url: IMAGE_URL, page: 1 }, {}), (e) => e.status === 400 && /storage host/.test(e.message));
-  await assert.rejects(run({ image_url: IMAGE_URL, page: 0 }), (e) => e.status === 400 && /page/.test(e.message));
+  await assert.rejects(run({ image_url: IMAGE_URL, page: 1 }, {}), (e) => e.status === 400 && e.code === "bad_url" && /storage host/.test(e.message));
+  await assert.rejects(run({ image_url: IMAGE_URL, page: 0 }), (e) => e.status === 400 && e.code === "bad_input" && /page/.test(e.message));
+  // The scanned-page task answers the same way, before rendering anything.
+  let rendered = false;
+  const deps = { renderPdfPages: async () => { rendered = true; return []; } };
+  await assert.rejects(
+    runTask("dualrep_transcribe_pdf_pages", { pdf_url: "https://typo.supabase.co/x.pdf?token=t", pages: [1] }, { client: fakeClient({}), env: ENV, deps }),
+    (e) => e.status === 400 && e.code === "bad_url" && !e.message.includes("typo"),
+  );
+  assert.equal(rendered, false);
+  // A host pasted as a URL still counts as its host.
+  await run({ image_url: IMAGE_URL, page: 1 }, { DUALREP_STORAGE_HOSTS: "https://ABC.supabase.co/" }).catch((e) => assert.notEqual(e.code, "bad_url"));
 });
 
 test("subject may be absent or null, but not an empty or huge string", () => {
@@ -288,7 +300,10 @@ test("outline and cards inputs: limits, unique chunk ids, well-formed existing r
   assert.match(outline({ max_topics: 41 }).join(), /max_topics/);
   assert.match(outline({ chunks: [{ id: C1, page: 1, excerpt: "x".repeat(401) }] }).join(), /excerpt/);
   assert.match(outline({ existing_topics: [{ title: "no id" }] }).join(), /existing_topics\[0\]/);
-  assert.match(outline({ chunks: [] }).join(), /1 to 600/);
+  assert.match(outline({ chunks: [] }).join(), /1 to 300/);
+  const many = (n) => Array.from({ length: n }, (_, i) => ({ id: `id-${i}`, page: 1, excerpt: "x" }));
+  assert.deepEqual(outline({ chunks: many(300) }), []);
+  assert.match(outline({ chunks: many(301) }).join(), /1 to 300/);
 
   const cards = (patch) => TASKS.dualrep_build_cards.checkInput({ ...CARDS_INPUT, ...patch }, { env: ENV });
   assert.deepEqual(cards({}), []);
@@ -365,6 +380,45 @@ test("outline: every chunk placed once, ids from the input only", () => {
   // A single-scope plan never continues an existing topic.
   const single = { ...input, plan: { ...input.plan, scope: "single" } };
   assert.match(t.checkOutput({ topics: [topic({ existing_topic_id: "T1" })], unassigned_chunk_ids: [] }, single).join(), /existing_topic_id/);
+});
+
+test("outline: the model sees short chunk aliases, and the caller gets its own ids back", async () => {
+  const block = TASKS.dualrep_build_outline.buildUser(OUTLINE_INPUT);
+  const sent = JSON.parse(block.text.slice(block.text.indexOf("{")));
+  assert.deepEqual(sent.chunks.map((c) => c.id), ["c1", "c2"]);
+  assert.ok(!block.text.includes(C1) && !block.text.includes(C2), "no UUIDs for the model to copy");
+  assert.deepEqual(sent.existing_topics, OUTLINE_INPUT.existing_topics);
+  // The model answers in aliases; runTask maps them back before validating and returning.
+  const answer = { topics: [{ key: "t1", title: "Cells", summary: "", existing_topic_id: "T1", chunk_ids: ["c2"] }], unassigned_chunk_ids: ["c1"] };
+  const result = await runTask("dualrep_build_outline", OUTLINE_INPUT, { client: fakeClient(jsonResponse(answer)), env: ENV });
+  assert.deepEqual(result.output, { topics: [{ ...answer.topics[0], chunk_ids: [C2] }], unassigned_chunk_ids: [C1] });
+  // An alias that was never sent is rejected like an unknown id (content-free).
+  const invented = { topics: [{ key: "t1", title: "Cells", summary: "", existing_topic_id: null, chunk_ids: ["c1", "c2", "c3"] }], unassigned_chunk_ids: [] };
+  await assert.rejects(runTask("dualrep_build_outline", OUTLINE_INPUT, { client: fakeClient(jsonResponse(invented)), env: ENV }),
+    (e) => e.code === "invalid_output" && e.errors.some((x) => /chunk_ids\[2\] is not a chunk id/.test(x)));
+});
+
+test("outline: the answer for the largest accepted input fits the output budget", () => {
+  // The answer must list every chunk once. For the most chunks the task accepts, with the most
+  // topics and full-length titles and summaries, the answer in aliases must leave most of
+  // max_tokens for the model's thinking. Counted conservatively: 1 token per 3 characters of
+  // JSON (Anthropic's tokenizer gives about 3 tokens for '"c123",' and 4 characters per token
+  // of English), so this overestimates.
+  const t = TASKS.dualrep_build_outline;
+  const n = 300;
+  const input = { plan: { title: "Bio", scope: "single", goal: "", target_date: null }, chunks: Array.from({ length: n }, () => ({ id: crypto.randomUUID(), page: 1, excerpt: "x" })), max_topics: 40 };
+  assert.deepEqual(t.checkInput(input, { env: ENV }), []);
+  const aliases = JSON.parse(t.buildUser(input).text.slice(t.buildUser(input).text.indexOf("{"))).chunks.map((c) => c.id);
+  const words = (k) => Array.from({ length: k }, () => "word").join(" ");
+  const answer = {
+    topics: Array.from({ length: input.max_topics }, (_, i) => ({ key: `t${i + 1}`, title: `${i + 1} ${words(23)}`.slice(0, 120), summary: words(59).slice(0, 299), existing_topic_id: null, chunk_ids: aliases.filter((_, j) => j % input.max_topics === i) })),
+    unassigned_chunk_ids: [],
+  };
+  assert.deepEqual(t.checkOutput(t.mapOutput(answer, input), input), [], "a valid answer");
+  const tokens = Math.ceil(JSON.stringify(answer).length / 3);
+  assert.ok(tokens <= t.maxTokens / 2, `about ${tokens} tokens of ${t.maxTokens}: at least half is left for thinking`);
+  // The same answer with the caller's UUIDs would not have fitted the old budget.
+  assert.ok(Math.ceil(JSON.stringify(t.mapOutput(answer, input)).length / 3) > 8192 / 2);
 });
 
 test("transcriptions are drafts, for the page that was sent, with uncertain words marked", () => {

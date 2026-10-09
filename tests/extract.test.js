@@ -6,7 +6,9 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chunkPageText, htmlToText, isPrivateAddress, checkUrl, fetchLimited, extractFromBuffer, extractLimits, makeRenderPdfPages, storageHosts } from "../src/extract.js";
+import { existsSync } from "node:fs";
+import zlib from "node:zlib";
+import { chunkPageText, htmlToText, isPrivateAddress, checkUrl, fetchLimited, extractFromBuffer, extractLimits, makeRenderPdfPages, makeDownloadCache, storageHosts, storageHostsLookValid } from "../src/extract.js";
 
 const ENV = { DUALREP_STORAGE_HOSTS: "abc.supabase.co" };
 const publicDns = async () => [{ address: "104.18.1.1", family: 4 }];
@@ -50,6 +52,17 @@ test("htmlToText handles lists, line breaks, comments, inline tags and stray ang
   assert.equal(text, "a < b and bold text\nnext\n\n- one\n\n- two\n\n# Big idea here");
 });
 
+test("htmlToText reads pages wrapped in a <form> (ASP.NET, SharePoint) and declarative shadow roots", () => {
+  const aspx = `<html><body><form method="post" id="form1"><input type="hidden" name="__VIEWSTATE" value="dDwtMTA4NzE5MzQ2Mzs7Pg==" />
+    <h1>Week 3: Osmosis</h1><p>Water moves across a membrane.</p><p>Toward the higher solute concentration.</p>
+    <select name="term"><option>Fall</option></select><textarea>Type here</textarea><button>Search</button></form></body></html>`;
+  const { text } = htmlToText(aspx);
+  assert.equal(text, "# Week 3: Osmosis\n\nWater moves across a membrane.\n\nToward the higher solute concentration.");
+  assert.ok(!text.includes("VIEWSTATE") && !text.includes("dDwt"), "attribute values never become text");
+  assert.equal(htmlToText("<div><template shadowrootmode=\"open\"><p>Shown text.</p></template></div>").text, "Shown text.");
+  assert.equal(htmlToText("<p>Kept.</p><template><p>Inert copy.</p></template>").text, "Kept.");
+});
+
 test("htmlToText stays fast on hostile markup (no quadratic regex)", () => {
   for (const evil of ["<nav>".repeat(200000), "<h1 ".repeat(200000), "<".repeat(1000000), "<script>".repeat(100000) + "x", "&amp".repeat(200000)]) {
     const t0 = Date.now();
@@ -70,6 +83,11 @@ test("private and special addresses are refused", () => {
 
 test("storage kinds must come from the allowed host; links must be https and public", async () => {
   assert.deepEqual(storageHosts({ DUALREP_STORAGE_HOSTS: " ABC.supabase.co , cdn.example " }), ["abc.supabase.co", "cdn.example"]);
+  // A pasted URL counts as its host; /diag says when an entry still isn't a host name.
+  assert.deepEqual(storageHosts({ DUALREP_STORAGE_HOSTS: "https://ABC.supabase.co/, abc.supabase.co/storage/v1" }), ["abc.supabase.co", "abc.supabase.co"]);
+  assert.equal(storageHostsLookValid({ DUALREP_STORAGE_HOSTS: "https://abc.supabase.co/" }), true);
+  assert.equal(storageHostsLookValid({ DUALREP_STORAGE_HOSTS: "abc supabase co" }), false);
+  assert.equal(storageHostsLookValid({}), false);
   await checkUrl(PDF_URL, { kind: "pdf", env: ENV, lookup: publicDns });
   await assert.rejects(checkUrl("https://other.supabase.co/a.pdf", { kind: "pdf", env: ENV, lookup: publicDns }), (e) => e.code === "bad_url");
   await assert.rejects(checkUrl("https://abc.supabase.co/a.pdf", { kind: "doc", env: {}, lookup: publicDns }), (e) => e.code === "bad_url", "no allowlist = closed");
@@ -89,6 +107,38 @@ test("downloads stop at the byte cap, declared or streamed", async () => {
   const ok = await fetchLimited(PDF_URL, { ...opts, fetchImpl: async () => new Response("%PDF-1.7", { headers: { "content-type": "application/pdf; charset=binary" } }) });
   assert.equal(ok.buffer.toString(), "%PDF-1.7");
   assert.equal(ok.contentType, "application/pdf");
+});
+
+test("a Storage file is downloaded once and then revalidated (304), not downloaded per batch", async () => {
+  const opts = { kind: "pdf", maxBytes: 1024, timeoutMs: 1000, env: ENV, lookup: publicDns };
+  const cache = makeDownloadCache();
+  const seen = [];
+  let version = "v1";
+  const fetchImpl = async (url, init) => {
+    seen.push({ url, ifNoneMatch: init.headers["if-none-match"] ?? null });
+    if (init.headers["if-none-match"] === `"${version}"`) return new Response(null, { status: 304 });
+    return new Response(`%PDF-${version}`, { status: 200, headers: { etag: `"${version}"`, "content-type": "application/pdf" } });
+  };
+  const signed = (token) => `https://abc.supabase.co/storage/v1/object/sign/sources/u/s/1.pdf?token=${token}`;
+  assert.equal((await fetchLimited(signed("a"), { ...opts, fetchImpl, cache })).buffer.toString(), "%PDF-v1");
+  // The next batch has a new signed URL for the same file: Storage checks it and answers 304.
+  const again = await fetchLimited(signed("b"), { ...opts, fetchImpl, cache });
+  assert.deepEqual([again.buffer.toString(), again.cached], ["%PDF-v1", true]);
+  assert.deepEqual(seen.map((x) => x.ifNoneMatch), [null, '"v1"']);
+  // A changed file comes back in full and replaces the copy.
+  version = "v2";
+  assert.equal((await fetchLimited(signed("c"), { ...opts, fetchImpl, cache })).buffer.toString(), "%PDF-v2");
+  // Another file, or a web link, is never answered from the copy.
+  await fetchLimited("https://abc.supabase.co/storage/v1/object/sign/sources/u/s/2.pdf?token=d", { ...opts, fetchImpl, cache });
+  assert.equal(seen.at(-1).ifNoneMatch, null);
+  await fetchLimited("https://example.com/page", { ...opts, kind: "link", fetchImpl, cache });
+  assert.equal(seen.at(-1).ifNoneMatch, null);
+  // The copy expires.
+  let now = 0;
+  const short = makeDownloadCache({ ttlMs: 1000, now: () => now });
+  short.set("k", { etag: "e", buffer: Buffer.from("x"), contentType: "" });
+  now = 2000;
+  assert.equal(short.get("k"), null);
 });
 
 test("redirects are re-checked, limited to 3, and HTTP errors are 422s", async () => {
@@ -160,6 +210,27 @@ test("a web page becomes one page-less entry with its title; an empty one is no_
   await assert.rejects(extractFromBuffer({ buffer: Buffer.from("<p> </p>"), contentType: "text/html", kind: "link" }, { limits }), (e) => e.status === 422 && e.code === "no_text");
 });
 
+test("text is capped: a PDF window stops at the limit, a document or page over it is too large", async () => {
+  const small = { ...limits, maxTextChars: 100 };
+  const pdf = fakePdf(["a".repeat(60), "b".repeat(30), "c".repeat(30), "d".repeat(30)]);
+  const out = await extractFromBuffer({ buffer: Buffer.from("%PDF-1.7"), kind: "pdf" }, { limits: small, pdf });
+  assert.deepEqual([out.pages.map((p) => p.page), out.last_page, out.total_pages], [[1, 2], 2, 4], "the worker continues from page 3");
+  await assert.rejects(extractFromBuffer({ buffer: Buffer.from("%PDF-1.7"), kind: "pdf" }, { limits: small, pdf: fakePdf(["x".repeat(101)]) }), (e) => e.status === 413 && e.code === "too_large");
+  await assert.rejects(extractFromBuffer({ buffer: Buffer.from("<p>" + "word ".repeat(30) + "</p>"), contentType: "text/html", kind: "link" }, { limits: small }), (e) => e.status === 413 && e.code === "too_large");
+});
+
+test("the reader's own answers pass through: busy (503) and out of memory (413)", async () => {
+  for (const [status, code] of [[503, "busy"], [413, "too_large"]]) {
+    const err = () => Object.assign(new Error("x"), { status, code });
+    await assert.rejects(extractFromBuffer({ buffer: Buffer.from("%PDF-1.7"), kind: "pdf" }, { limits, pdf: { extractPdfPages: async () => { throw err(); } } }), (e) => e.status === status && e.code === code);
+    const loadMammoth = async () => ({ convertToHtml: async () => { throw err(); } });
+    await assert.rejects(extractFromBuffer({ buffer: Buffer.from("PK\x03\x04"), contentType: "", kind: "doc" }, { limits, loadMammoth }), (e) => e.status === status && e.code === code);
+  }
+  // A read that ran out of time is unreadable, not a server error.
+  const slow = { extractPdfPages: async () => { throw Object.assign(new Error("slow"), { code: "isolate_timeout" }); } };
+  await assert.rejects(extractFromBuffer({ buffer: Buffer.from("%PDF-1.7"), kind: "pdf" }, { limits, pdf: slow }), (e) => e.status === 422 && e.code === "pdf_unreadable");
+});
+
 test("a docx goes through mammoth's HTML so headings become chunk titles", async () => {
   const loadMammoth = async () => ({ convertToHtml: async () => ({ value: "<h1>Week 2: Enzymes</h1><p>Enzymes lower activation energy.</p>" }) });
   const zip = Buffer.from("PK\x03\x04 fake docx");
@@ -171,7 +242,7 @@ test("a docx goes through mammoth's HTML so headings become chunk titles", async
 });
 
 test("limits come from env, and a bad value falls back to the default", () => {
-  assert.deepEqual(extractLimits({}), { maxBytes: 26214400, maxLinkBytes: 5242880, maxPages: 100, timeoutMs: 20000, budgetMs: 60000, minPageChars: 10 });
+  assert.deepEqual(extractLimits({}), { maxBytes: 26214400, maxLinkBytes: 5242880, maxPages: 100, timeoutMs: 20000, budgetMs: 60000, minPageChars: 10, maxMemoryMb: 350, maxTextChars: 3000000 });
   const l = extractLimits({ EXTRACT_MAX_PAGES: "20", EXTRACT_TIMEOUT_MS: "abc", EXTRACT_MAX_BYTES: "-1" });
   assert.equal(l.maxPages, 20);
   assert.equal(l.timeoutMs, 20000);
@@ -192,6 +263,24 @@ test("the renderer downloads from storage, renders only the requested pages, and
   await assert.rejects(renderPages("https://evil.example/x.pdf", [1]), (e) => e.status === 400 && e.code === "bad_url");
   const notPdf = makeRenderPdfPages({ env: ENV, fetchImpl: async () => new Response("<html>"), lookup: publicDns, render });
   await assert.rejects(notPdf(PDF_URL, [1]), (e) => e.status === 415);
+});
+
+test("the renderer has its own time budget, passes busy on, and refuses an oversized result", async () => {
+  const fetchImpl = async () => new Response("%PDF-1.7 fake", { status: 200 });
+  let opts;
+  const make = (render, env = ENV) => makeRenderPdfPages({ env, fetchImpl, lookup: publicDns, render });
+  const t0 = Date.now();
+  await make(async (buf, pages, o) => { opts = o; return pages.map((p) => ({ page: p, mediaType: "image/jpeg", data: "AAAA" })); }, { ...ENV, DUALREP_RENDER_BUDGET_MS: "30000" })(PDF_URL, [1]);
+  assert.equal(opts.quality, 85);
+  assert.ok(opts.deadline >= t0 + 30000 && opts.deadline <= Date.now() + 30000, "pages stop being rendered after the budget");
+  // Out of time: a 503 the worker retries later (the model keeps its share of the task's time).
+  for (const code of ["render_timeout", "isolate_timeout"]) {
+    await assert.rejects(make(async () => { throw Object.assign(new Error("slow"), { code }); })(PDF_URL, [1]), (e) => e.status === 503 && e.code === "render_timeout");
+  }
+  await assert.rejects(make(async () => { throw Object.assign(new Error("busy"), { status: 503, code: "busy" }); })(PDF_URL, [1]), (e) => e.status === 503 && e.code === "busy");
+  await assert.rejects(make(async () => { throw Object.assign(new Error("big"), { status: 413, code: "too_large" }); })(PDF_URL, [1]), (e) => e.status === 413);
+  const huge = "A".repeat(7 * 1024 * 1024);
+  await assert.rejects(make(async (buf, pages) => pages.map((p) => ({ page: p, mediaType: "image/jpeg", data: huge })))(PDF_URL, [1, 2, 3, 4]), (e) => e.status === 413 && e.code === "too_large");
 });
 
 // ---- real libraries (skipped without node_modules) ----
@@ -239,8 +328,39 @@ test("real pdf-parse: per-page text, a scanned-looking page, windows, and render
   if (!hasCanvas) return; // no canvas on this host: text extraction is still verified above
   const renderPages = makeRenderPdfPages({ env: ENV, lookup: publicDns, fetchImpl: async () => new Response(pdf, { status: 200 }) });
   const rendered = await renderPages(PDF_URL, [3, 2]);
-  assert.deepEqual(rendered.map((s) => [s.page, s.mediaType]), [[3, "image/png"], [2, "image/png"]]);
-  assert.equal(Buffer.from(rendered[0].data, "base64").subarray(1, 4).toString(), "PNG");
+  assert.deepEqual(rendered.map((s) => [s.page, s.mediaType]), [[3, "image/jpeg"], [2, "image/jpeg"]]);
+  assert.deepEqual([...Buffer.from(rendered[0].data, "base64").subarray(0, 3)], [0xff, 0xd8, 0xff], "a JPEG");
+});
+
+// A PDF whose one page content stream is tiny compressed and huge inflated.
+function pdfBomb(mb) {
+  const content = Buffer.alloc(mb * 1024 * 1024, 0x20);
+  content.write("BT /F1 12 Tf 72 720 Td (Hello) Tj ET\n", 0);
+  const z = zlib.deflateSync(content, { level: 9 });
+  const objs = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+    null, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"];
+  const parts = [Buffer.from("%PDF-1.4\n")];
+  const offsets = [];
+  let pos = parts[0].length;
+  objs.forEach((o, i) => {
+    offsets.push(pos);
+    const b = o === null
+      ? Buffer.concat([Buffer.from(`${i + 1} 0 obj\n<< /Length ${z.length} /Filter /FlateDecode >>\nstream\n`), z, Buffer.from("\nendstream\nendobj\n")])
+      : Buffer.from(`${i + 1} 0 obj\n${o}\nendobj\n`);
+    parts.push(b);
+    pos += b.length;
+  });
+  parts.push(Buffer.from(`xref\n0 ${objs.length + 1}\n0000000000 65535 f \n` + offsets.map((o) => String(o).padStart(10, "0") + " 00000 n \n").join("") +
+    `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${pos}\n%%EOF\n`));
+  return Buffer.concat(parts);
+}
+
+test("real pdf-parse: a small PDF that inflates past the memory limit is refused, and Tracy stays up", { skip: !(pdfParse && existsSync("/proc/self/status")) && "pdf-parse or /proc missing" }, async () => {
+  const bomb = pdfBomb(150);
+  assert.ok(bomb.length < 1024 * 1024, "well under a megabyte to download");
+  await assert.rejects(extractFromBuffer({ buffer: bomb, contentType: "application/pdf", kind: "pdf" }, { limits: { ...limits, maxMemoryMb: 200 } }), (e) => e.status === 413 && e.code === "too_large");
+  assert.ok(process.memoryUsage().rss < 400 * 1024 * 1024, "the bomb never inflated in this process");
 });
 
 test("real mammoth: a docx heading survives as the chunk title", { skip: !(docxLib && (await optional("mammoth"))) && "docx/mammoth not installed" }, async () => {
@@ -255,4 +375,16 @@ test("real mammoth: a docx heading survives as the chunk title", { skip: !(docxL
   assert.equal(out.format, "docx");
   assert.equal(out.pages[0].chunks[0].title, "Week 2: Enzymes");
   assert.match(out.pages[0].chunks[0].content, /Competitive inhibitors bind the active site\./);
+});
+
+test("real mammoth: a .docx that inflates past the memory limit is refused", { skip: !((await optional("mammoth")) && existsSync("/proc/self/status")) && "mammoth or /proc missing" }, async () => {
+  const JSZip = (await import("jszip")).default;
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`);
+  zip.file("_rels/.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`);
+  const head = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>`;
+  zip.file("word/document.xml", Buffer.concat([Buffer.from(head), Buffer.alloc(80 * 1024 * 1024, 0x61), Buffer.from("</w:t></w:r></w:p></w:body></w:document>")]));
+  const docx = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE", compressionOptions: { level: 9 } });
+  assert.ok(docx.length < 1024 * 1024);
+  await assert.rejects(extractFromBuffer({ buffer: docx, contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", kind: "doc" }, { limits: { ...limits, maxMemoryMb: 200 } }), (e) => e.status === 413 && e.code === "too_large");
 });

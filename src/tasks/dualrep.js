@@ -38,6 +38,8 @@ const CARD_TYPES = ["basic", "cloze", "why", "write_from_memory"];
 const RELATIONS = ["related", "why", "analogy", "prerequisite", "contrast"];
 const LEGIBILITY = ["good", "fair", "poor"];
 export const MAX_PDF_PAGES_PER_CALL = 4;
+export const MAX_OUTLINE_CHUNKS = 300;
+const chunkAlias = (i) => `c${i + 1}`;
 const MAX_ID = 64; // DualRep sends UUIDs; anything much longer is a caller bug
 
 const COMMON_RULES = [
@@ -67,14 +69,18 @@ function omit(obj, keys) {
 
 // A signed Storage URL from one of DUALREP_STORAGE_HOSTS. Closed when the
 // variable is unset, the same as /ai/extract: Tracy (or Anthropic's fetcher,
-// for a photo) only ever reads files from DualRep's own Storage.
+// for a photo) only ever reads files from DualRep's own Storage. A URL that
+// fails here is answered 400 code "bad_url", the same code /ai/extract uses,
+// so DualRep tells the founder the setup is incomplete (usually
+// DUALREP_STORAGE_HOSTS) instead of "try again".
 function checkSignedUrl(url, field, env) {
-  if (typeof url !== "string") return [`${field} must be a string`];
+  const bad = (message) => { throw Object.assign(new Error(message), { status: 400, code: "bad_url" }); };
+  if (typeof url !== "string") bad(`${field} must be a string`);
   let u;
-  try { u = new URL(url); } catch { return [`${field} is not a URL`]; }
-  if (u.protocol !== "https:") return [`${field} must be https`];
-  if (u.username || u.password) return [`${field} must not carry credentials`];
-  if (!storageHosts(env).includes(u.host.toLowerCase())) return [`${field} host is not an allowed storage host`];
+  try { u = new URL(url); } catch { bad(`${field} is not a URL`); }
+  if (u.protocol !== "https:") bad(`${field} must be https`);
+  if (u.username || u.password) bad(`${field} must not carry credentials`);
+  if (!storageHosts(env).includes(u.host.toLowerCase())) bad(`${field} host is not an allowed storage host`);
   return [];
 }
 
@@ -263,15 +269,24 @@ export const DUALREP_TASKS = {
   },
 
   // Chunks of the plan's sources -> a topic outline the person reviews.
+  // The answer has to list every chunk once, so its length grows with the
+  // input: the model sees short aliases instead of the caller's ids ("c1" is
+  // about 3 tokens, a UUID about 25; buildUser / mapOutput), and the input is
+  // capped at MAX_OUTLINE_CHUNKS. With aliases the answer for 300 chunks is
+  // about 1,700 tokens at its shortest and 2,500 with real titles and
+  // summaries (counted with Anthropic's tokenizer), well inside maxTokens,
+  // which also has to hold the model's thinking. An answer cut off anyway
+  // comes back as code "truncated": send fewer chunks (DualRep groups
+  // neighbouring ones), not the same input again.
   dualrep_build_outline: {
     ...DUALREP,
-    maxTokens: 8192,
+    maxTokens: 16000,
     effort: "medium",
     timeoutMs: 105_000,
     checkInput(input) {
       const errors = [...checkPreviousErrors(input)];
       if (!isPlainObject(input.plan) || !["single", "cumulative"].includes(input.plan.scope)) errors.push("plan.scope must be single or cumulative");
-      if (!Array.isArray(input.chunks) || input.chunks.length < 1 || input.chunks.length > 600) errors.push("chunks must have 1 to 600 entries");
+      if (!Array.isArray(input.chunks) || input.chunks.length < 1 || input.chunks.length > MAX_OUTLINE_CHUNKS) errors.push(`chunks must have 1 to ${MAX_OUTLINE_CHUNKS} entries`);
       else {
         errors.push(...checkChunkIds(input.chunks));
         input.chunks.forEach((c, i) => {
@@ -303,7 +318,20 @@ export const DUALREP_TASKS = {
       );
     },
     buildUser(input) {
-      return jsonText("Build the outline from this JSON input:", input);
+      return jsonText("Build the outline from this JSON input:", { ...input, chunks: input.chunks.map((c, i) => ({ ...c, id: chunkAlias(i) })) });
+    },
+    // The model's aliases back to the caller's chunk ids, before checkOutput
+    // (which checks against the real ids) and before the caller sees it. An
+    // alias that was never sent stays as it is and fails the check.
+    mapOutput(out, input) {
+      if (!isPlainObject(out)) return out;
+      const real = new Map(input.chunks.map((c, i) => [chunkAlias(i), c.id]));
+      const back = (ids) => (Array.isArray(ids) ? ids.map((id) => (real.has(id) ? real.get(id) : id)) : ids);
+      return {
+        ...out,
+        topics: Array.isArray(out.topics) ? out.topics.map((t) => (isPlainObject(t) ? { ...t, chunk_ids: back(t.chunk_ids) } : t)) : out.topics,
+        unassigned_chunk_ids: back(out.unassigned_chunk_ids),
+      };
     },
     schema: {
       type: "object",
